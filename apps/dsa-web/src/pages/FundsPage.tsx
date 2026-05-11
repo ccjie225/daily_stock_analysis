@@ -79,8 +79,13 @@ const CompactRow: React.FC<{ left: string; right: string; meta?: string; tone?: 
   </div>
 );
 
-const ListBlock: React.FC<{ title: string; items: string[]; empty: string }> = ({ title, items, empty }) => (
-  <Card padding="md" className="h-full">
+const ListBlock: React.FC<{ title: string; items: string[]; empty: string; fill?: boolean }> = ({
+  title,
+  items,
+  empty,
+  fill = false,
+}) => (
+  <Card padding="md" className={fill ? 'h-full' : undefined}>
     <h3 className="text-sm font-semibold text-foreground">{title}</h3>
     {items.length > 0 ? (
       <ul className="mt-3 space-y-2 text-sm text-secondary-text">
@@ -197,7 +202,7 @@ const FundsPage: React.FC = () => {
       ) : null}
 
       {result ? (
-        <main className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+        <main className="grid items-start gap-4 xl:grid-cols-[1.35fr_0.65fr]">
           <section className="space-y-4">
             <Card variant="gradient" padding="lg">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -259,12 +264,15 @@ const FundsPage: React.FC = () => {
             </Card>
 
             <div className="grid gap-4 lg:grid-cols-2">
-              <ListBlock title="核心理由" items={result.reasons} empty="暂无正向理由，建议先观察数据完整性。" />
-              <ListBlock title="主要风险" items={result.risks} empty="暂无显著风险，但仍需结合持仓和费用确认。" />
+              <ListBlock title="核心理由" items={result.reasons} empty="暂无正向理由，建议先观察数据完整性。" fill />
+              <ListBlock title="主要风险" items={result.risks} empty="暂无显著风险，但仍需结合持仓和费用确认。" fill />
             </div>
 
             <div className="grid gap-4 xl:grid-cols-2">
-              <Card title="重仓持股" subtitle={holdings[0]?.reportPeriod || 'Top holdings'}>
+              <Card title="基金披露持仓" subtitle={holdings[0]?.reportPeriod || 'Top holdings'}>
+                <p className="mb-3 text-xs leading-5 text-muted-text">
+                  这里是基金定期报告披露的底层重仓，不是你的个人账户持仓。
+                </p>
                 {holdings.length ? (
                   <div className="space-y-2">
                     {holdings.slice(0, 10).map((item) => (
@@ -366,6 +374,16 @@ const FundsPage: React.FC = () => {
                     </span>
                   </div>
                 ))}
+              </div>
+            </Card>
+
+            <Card title="我的基金持仓" subtitle="My position">
+              <p className="text-sm leading-6 text-secondary-text">
+                暂未导入你的支付宝、天天基金或养基宝账户持仓。接入截图识别后，这里会展示你的持有金额、份额、成本、持有收益和真实收益率。
+              </p>
+              <div className="mt-3 space-y-2">
+                <CompactRow left="导入方式" right="待接入" meta="截图识别" />
+                <CompactRow left="核心字段" right="未导入" meta="金额 / 份额 / 成本" />
               </div>
             </Card>
 
