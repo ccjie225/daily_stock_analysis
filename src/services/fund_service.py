@@ -20,6 +20,25 @@ logger = logging.getLogger(__name__)
 _FUND_CODE_RE = re.compile(r"^\d{6}$")
 _PCT_QUANT = Decimal("0.01")
 _NAV_QUANT = Decimal("0.0001")
+_RATIO_QUANT = Decimal("0.01")
+_MARKET_VALUE_QUANT = Decimal("0.01")
+
+# AkShare's Legulegu index valuation endpoint only supports this finite set.
+# Keep matching ordered so "中证1000" is tested before "中证100".
+_INDEX_VALUATION_CANDIDATES = (
+    ("中证1000", "中证1000"),
+    ("创业板50", "创业板50"),
+    ("沪深300", "沪深300"),
+    ("中证500", "中证500"),
+    ("中证800", "中证800"),
+    ("深证100", "深证100"),
+    ("上证380", "上证380"),
+    ("上证180", "上证180"),
+    ("上证50", "上证50"),
+    ("深证红利", "深证红利"),
+    ("上证红利", "上证红利"),
+    ("中证100", "中证100"),
+)
 
 
 class FundServiceError(Exception):
@@ -99,7 +118,22 @@ class FundService:
 
         returns = self._calculate_returns(nav_points)
         risk = self._calculate_risk(nav_points)
-        label, reasons, risks, evidence_gaps = self._classify(profile, returns, risk, nav_points)
+        reference_valuation = self.get_reference_valuation(profile)
+        peer_analysis = self.get_peer_analysis(code)
+        holdings = self.get_top_holdings(code)
+        industry_allocation = self.get_industry_allocation(code)
+        fees = self.get_fees(code)
+        label, reasons, risks, evidence_gaps = self._classify(
+            profile,
+            returns,
+            risk,
+            nav_points,
+            reference_valuation=reference_valuation,
+            peer_analysis=peer_analysis,
+            holdings=holdings,
+            industry_allocation=industry_allocation,
+            fees=fees,
+        )
         latest = nav_points[-1]
 
         return {
@@ -107,8 +141,13 @@ class FundService:
             "latest_nav": self._serialize_nav_point(latest),
             "returns": returns,
             "risk": risk,
+            "reference_valuation": reference_valuation,
+            "peer_analysis": peer_analysis,
+            "holdings": holdings,
+            "industry_allocation": industry_allocation,
+            "fees": fees,
             "label": label,
-            "summary": self._build_summary(profile, returns, risk, label),
+            "summary": self._build_summary(profile, returns, risk, label, reference_valuation),
             "reasons": reasons,
             "risks": risks,
             "evidence_gaps": evidence_gaps,
@@ -177,6 +216,322 @@ class FundService:
         points = sorted(points, key=lambda item: item.date)
         cutoff = points[-1].date - timedelta(days=days)
         return [item for item in points if item.date >= cutoff]
+
+    def get_reference_valuation(self, profile: Dict[str, Any]) -> Dict[str, Any]:
+        """Return PE/PB reference data for index-like funds when it is available."""
+        reference_name = self._infer_reference_index(profile)
+        result = {
+            "reference_name": reference_name,
+            "reference_type": "index" if reference_name else "unknown",
+            "pe_ttm": None,
+            "pe_percentile": None,
+            "pb": None,
+            "pb_percentile": None,
+            "dividend_yield": None,
+            "roe": None,
+            "as_of_date": None,
+            "source": None,
+            "notes": [],
+        }
+
+        if not reference_name:
+            result["notes"].append(
+                "未自动匹配到可用指数估值；QDII/主动基金需参考跟踪指数或重仓资产估值"
+            )
+            return result
+
+        try:
+            import akshare as ak
+        except ImportError:
+            result["notes"].append("当前环境未安装 AkShare，无法获取指数 PE/PB")
+            return result
+
+        try:
+            pe_df = ak.stock_index_pe_lg(symbol=reference_name)
+            pe_current, pe_percentile, pe_date = self._extract_index_metric(
+                pe_df,
+                ("滚动市盈率", "市盈率", "静态市盈率"),
+            )
+            result["pe_ttm"] = _round_decimal(pe_current, _RATIO_QUANT)
+            result["pe_percentile"] = _round_decimal(pe_percentile, _PCT_QUANT)
+            result["as_of_date"] = pe_date or result["as_of_date"]
+        except Exception as exc:
+            result["notes"].append(f"{reference_name} PE 获取失败")
+            logger.info("基金参考指数 %s PE 获取失败: %s", reference_name, exc)
+
+        try:
+            pb_df = ak.stock_index_pb_lg(symbol=reference_name)
+            pb_current, pb_percentile, pb_date = self._extract_index_metric(
+                pb_df,
+                ("市净率", "PB"),
+            )
+            result["pb"] = _round_decimal(pb_current, _RATIO_QUANT)
+            result["pb_percentile"] = _round_decimal(pb_percentile, _PCT_QUANT)
+            result["as_of_date"] = result["as_of_date"] or pb_date
+        except Exception as exc:
+            result["notes"].append(f"{reference_name} PB 获取失败")
+            logger.info("基金参考指数 %s PB 获取失败: %s", reference_name, exc)
+
+        if result["pe_ttm"] is not None or result["pb"] is not None:
+            result["source"] = "akshare.stock_index_pe_lg/stock_index_pb_lg"
+        else:
+            result["notes"].append("参考指数已识别，但估值数据源暂不可用")
+        return result
+
+    def get_peer_analysis(self, fund_code: str) -> Optional[Dict[str, Any]]:
+        try:
+            import akshare as ak
+        except ImportError:
+            return None
+
+        if not hasattr(ak, "fund_individual_analysis_xq"):
+            return None
+
+        try:
+            df = ak.fund_individual_analysis_xq(symbol=fund_code)
+        except Exception as exc:
+            logger.info("基金 %s 同类分析获取失败: %s", fund_code, exc)
+            return None
+
+        if df is None or getattr(df, "empty", False):
+            return None
+
+        row = self._pick_period_row(df, ("近1年", "近一年", "1年"))
+        if row is None:
+            try:
+                row = next(df.iterrows())[1]
+            except StopIteration:
+                return None
+
+        return {
+            "period": str(_first_value(row, ("周期", "period")) or "近1年"),
+            "risk_return_score": _round_decimal(_to_decimal(_first_value(row, ("较同类风险收益比", "risk_return_score")))),
+            "anti_risk_score": _round_decimal(_to_decimal(_first_value(row, ("较同类抗风险波动", "anti_risk_score")))),
+            "volatility_annualized_pct": _round_decimal(_to_decimal(_first_value(row, ("年化波动率", "volatility_annualized_pct")))),
+            "sharpe_ratio": _round_decimal(_to_decimal(_first_value(row, ("年化夏普比率", "sharpe_ratio"))), _RATIO_QUANT),
+            "max_drawdown_pct": _round_decimal(_to_decimal(_first_value(row, ("最大回撤", "max_drawdown_pct")))),
+            "source": "akshare.fund_individual_analysis_xq",
+        }
+
+    def get_top_holdings(self, fund_code: str, *, limit: int = 10) -> List[Dict[str, Any]]:
+        try:
+            import akshare as ak
+        except ImportError:
+            return []
+
+        frames = []
+        for year in self._candidate_report_years():
+            try:
+                df = ak.fund_portfolio_hold_em(symbol=fund_code, date=year)
+            except Exception as exc:
+                logger.info("基金 %s %s 持仓获取失败: %s", fund_code, year, exc)
+                continue
+            if df is not None and not getattr(df, "empty", False):
+                frames.append(df)
+                break
+
+        if not frames:
+            return []
+
+        df = frames[0]
+        rows = list(df.iterrows())
+        latest_report = self._latest_report_key(row for _, row in rows)
+        result: List[Dict[str, Any]] = []
+        for _, row in rows:
+            quarter = str(_first_value(row, ("季度", "报告期", "report_period")) or "").strip()
+            if latest_report and self._report_sort_key(quarter) != latest_report:
+                continue
+            code = str(_first_value(row, ("股票代码", "代码", "stock_code")) or "").strip()
+            name = str(_first_value(row, ("股票名称", "名称", "stock_name")) or "").strip()
+            if not code and not name:
+                continue
+            result.append({
+                "stock_code": code,
+                "stock_name": name,
+                "weight_pct": _round_decimal(_to_decimal(_first_value(row, ("占净值比例", "持仓占比", "weight_pct")))),
+                "shares": _round_decimal(_to_decimal(_first_value(row, ("持股数", "shares"))), _RATIO_QUANT),
+                "market_value": _round_decimal(_to_decimal(_first_value(row, ("持仓市值", "市值", "market_value"))), _MARKET_VALUE_QUANT),
+                "report_period": quarter or None,
+            })
+            if len(result) >= limit:
+                break
+        return result
+
+    def get_industry_allocation(self, fund_code: str, *, limit: int = 8) -> List[Dict[str, Any]]:
+        try:
+            import akshare as ak
+        except ImportError:
+            return []
+
+        frames = []
+        for year in self._candidate_report_years():
+            try:
+                df = ak.fund_portfolio_industry_allocation_em(symbol=fund_code, date=year)
+            except Exception as exc:
+                logger.info("基金 %s %s 行业配置获取失败: %s", fund_code, year, exc)
+                continue
+            if df is not None and not getattr(df, "empty", False):
+                frames.append(df)
+                break
+
+        if not frames:
+            return []
+
+        df = frames[0]
+        rows = list(df.iterrows())
+        latest_date = self._latest_report_date(row for _, row in rows)
+        result: List[Dict[str, Any]] = []
+        for _, row in rows:
+            report_date = _normalize_date(_first_value(row, ("截止时间", "报告期", "date")))
+            if latest_date and report_date != latest_date:
+                continue
+            industry = str(_first_value(row, ("行业类别", "行业", "industry")) or "").strip()
+            if not industry:
+                continue
+            result.append({
+                "industry": industry,
+                "weight_pct": _round_decimal(_to_decimal(_first_value(row, ("占净值比例", "weight_pct")))),
+                "market_value": _round_decimal(_to_decimal(_first_value(row, ("市值", "market_value"))), _MARKET_VALUE_QUANT),
+                "report_date": report_date.isoformat() if report_date else None,
+            })
+            if len(result) >= limit:
+                break
+        return result
+
+    def get_fees(self, fund_code: str) -> Dict[str, Any]:
+        result = {
+            "management_fee_pct": None,
+            "custodian_fee_pct": None,
+            "sales_service_fee_pct": None,
+            "short_term_redemption_fee_pct": None,
+            "items": [],
+            "source": None,
+        }
+
+        try:
+            import akshare as ak
+        except ImportError:
+            return result
+
+        if not hasattr(ak, "fund_individual_detail_info_xq"):
+            return result
+
+        try:
+            df = ak.fund_individual_detail_info_xq(symbol=fund_code)
+        except Exception as exc:
+            logger.info("基金 %s 费率获取失败: %s", fund_code, exc)
+            return result
+
+        if df is None or getattr(df, "empty", False):
+            return result
+
+        for _, row in df.iterrows():
+            fee_type = str(_first_value(row, ("费用类型", "fee_type")) or "").strip()
+            condition = str(_first_value(row, ("条件或名称", "条件", "名称", "condition")) or "").strip()
+            value = _to_decimal(_first_value(row, ("费用", "费率", "value")))
+            value_float = _round_decimal(value, _RATIO_QUANT)
+            if fee_type or condition or value is not None:
+                result["items"].append({
+                    "fee_type": fee_type,
+                    "condition": condition,
+                    "fee_pct": value_float,
+                })
+
+            if "基金管理费" in condition:
+                result["management_fee_pct"] = value_float
+            elif "基金托管费" in condition:
+                result["custodian_fee_pct"] = value_float
+            elif "销售服务费" in condition:
+                result["sales_service_fee_pct"] = value_float
+            elif "持有期限<7" in condition or "持有期限 < 7" in condition:
+                result["short_term_redemption_fee_pct"] = value_float
+
+        result["items"] = result["items"][:12]
+        result["source"] = "akshare.fund_individual_detail_info_xq" if result["items"] else None
+        return result
+
+    @staticmethod
+    def _infer_reference_index(profile: Dict[str, Any]) -> Optional[str]:
+        haystack = " ".join(
+            str(profile.get(key) or "")
+            for key in ("fund_name", "fund_type")
+        )
+        for keyword, index_name in _INDEX_VALUATION_CANDIDATES:
+            if keyword in haystack:
+                return index_name
+        return None
+
+    @staticmethod
+    def _extract_index_metric(
+        df: Any,
+        column_candidates: Sequence[str],
+    ) -> tuple[Optional[Decimal], Optional[Decimal], Optional[str]]:
+        if df is None or getattr(df, "empty", False):
+            return None, None, None
+
+        values: List[Decimal] = []
+        latest_date = None
+        for _, row in df.iterrows():
+            value = _to_decimal(_first_value(row, column_candidates))
+            if value is None or value <= 0:
+                continue
+            values.append(value)
+            latest_date = _normalize_date(_first_value(row, ("日期", "date", "trade_date")))
+
+        if not values:
+            return None, None, None
+
+        current = values[-1]
+        percentile = Decimal(sum(1 for item in values if item <= current)) / Decimal(len(values)) * Decimal("100")
+        return current, percentile, latest_date.isoformat() if latest_date else None
+
+    @staticmethod
+    def _pick_period_row(df: Any, preferred_periods: Sequence[str]) -> Any:
+        preferred = set(preferred_periods)
+        for _, row in df.iterrows():
+            period = str(_first_value(row, ("周期", "period")) or "").strip()
+            if period in preferred:
+                return row
+        return None
+
+    @staticmethod
+    def _candidate_report_years() -> List[str]:
+        current_year = date.today().year
+        return [str(current_year), str(current_year - 1), str(current_year - 2)]
+
+    @staticmethod
+    def _report_sort_key(value: str) -> int:
+        text = (value or "").strip()
+        match = re.search(r"(\d{4})\D*([1-4])\D*季度", text)
+        if match:
+            return int(match.group(1)) * 10 + int(match.group(2))
+
+        parsed = _normalize_date(text)
+        if parsed:
+            return int(parsed.strftime("%Y%m%d"))
+
+        match = re.search(r"(\d{4})(\d{2})(\d{2})", text)
+        if match:
+            return int("".join(match.groups()))
+        return -1
+
+    @classmethod
+    def _latest_report_key(cls, rows: Iterable[Any]) -> Optional[int]:
+        keys = [
+            cls._report_sort_key(str(_first_value(row, ("季度", "报告期", "date")) or ""))
+            for row in rows
+        ]
+        valid = [item for item in keys if item >= 0]
+        return max(valid) if valid else None
+
+    @staticmethod
+    def _latest_report_date(rows: Iterable[Any]) -> Optional[date]:
+        dates = [
+            _normalize_date(_first_value(row, ("截止时间", "报告期", "date")))
+            for row in rows
+        ]
+        valid = [item for item in dates if item is not None]
+        return max(valid) if valid else None
 
     @staticmethod
     def _normalize_fund_code(fund_code: str) -> str:
@@ -364,6 +719,12 @@ class FundService:
         returns: Dict[str, Optional[float]],
         risk: Dict[str, Any],
         points: Sequence[_NavPoint],
+        *,
+        reference_valuation: Optional[Dict[str, Any]] = None,
+        peer_analysis: Optional[Dict[str, Any]] = None,
+        holdings: Optional[Sequence[Dict[str, Any]]] = None,
+        industry_allocation: Optional[Sequence[Dict[str, Any]]] = None,
+        fees: Optional[Dict[str, Any]] = None,
     ) -> tuple[str, List[str], List[str], List[str]]:
         reasons: List[str] = []
         risks: List[str] = []
@@ -382,6 +743,11 @@ class FundService:
         one_year = returns.get("one_year_pct")
         drawdown = risk.get("max_drawdown_pct")
         volatility = risk.get("volatility_annualized_pct")
+        reference_valuation = reference_valuation or {}
+        peer_analysis = peer_analysis or {}
+        holdings = holdings or []
+        industry_allocation = industry_allocation or []
+        fees = fees or {}
 
         if three_month is not None and three_month > 0:
             reasons.append(f"近 3 月收益为 {three_month:.2f}%，短期净值处于修复或上行阶段")
@@ -389,6 +755,63 @@ class FundService:
             reasons.append(f"近 1 年收益为 {one_year:.2f}%，中期表现为正")
         if drawdown is not None and drawdown > -10:
             reasons.append(f"观察期最大回撤约 {drawdown:.2f}%，回撤相对可控")
+
+        reference_name = reference_valuation.get("reference_name")
+        pe = reference_valuation.get("pe_ttm")
+        pe_percentile = reference_valuation.get("pe_percentile")
+        pb = reference_valuation.get("pb")
+        pb_percentile = reference_valuation.get("pb_percentile")
+        if reference_name and (pe is not None or pb is not None):
+            value_parts = []
+            if pe is not None:
+                value_parts.append(f"PE {pe:.2f}")
+            if pb is not None:
+                value_parts.append(f"PB {pb:.2f}")
+            reasons.append(f"已匹配参考指数 {reference_name}，可用 {'、'.join(value_parts)} 作为估值参照")
+        elif reference_valuation.get("reference_type") == "unknown":
+            gaps.append("未匹配到 PE/PB 估值参考，需通过跟踪指数、重仓股估值或人工映射补充")
+
+        if pe_percentile is not None and pe_percentile >= 80:
+            risks.append(f"{reference_name or '参考指数'} PE 处于历史约 {pe_percentile:.0f}% 分位，估值偏高")
+        elif pe_percentile is not None and pe_percentile <= 25:
+            reasons.append(f"{reference_name or '参考指数'} PE 处于历史约 {pe_percentile:.0f}% 分位，估值压力相对较低")
+        if pb_percentile is not None and pb_percentile >= 80:
+            risks.append(f"{reference_name or '参考指数'} PB 处于历史约 {pb_percentile:.0f}% 分位，净资产估值偏高")
+
+        risk_return_score = peer_analysis.get("risk_return_score")
+        anti_risk_score = peer_analysis.get("anti_risk_score")
+        sharpe = peer_analysis.get("sharpe_ratio")
+        if risk_return_score is not None and risk_return_score >= 70:
+            reasons.append(f"同类风险收益评分约 {risk_return_score:.0f}，同类对比表现较好")
+        if anti_risk_score is not None and anti_risk_score < 40:
+            risks.append(f"同类抗风险波动评分约 {anti_risk_score:.0f}，下跌波动控制偏弱")
+        if sharpe is not None and sharpe > 1:
+            reasons.append(f"近 1 年夏普比率约 {sharpe:.2f}，风险调整后收益为正")
+
+        top_ten_weight = sum(
+            item.get("weight_pct") or 0
+            for item in holdings[:10]
+        ) if holdings else None
+        if top_ten_weight is not None and top_ten_weight >= 50:
+            risks.append(f"前十大重仓合计约 {top_ten_weight:.2f}%，持仓集中度较高")
+        elif holdings:
+            reasons.append(f"已获取最新披露重仓股，前十大合计约 {top_ten_weight:.2f}%")
+        else:
+            gaps.append("缺少重仓股披露数据，暂不能判断持仓集中度和风格漂移")
+
+        top_industry = industry_allocation[0] if industry_allocation else None
+        if top_industry and (top_industry.get("weight_pct") or 0) >= 40:
+            risks.append(
+                f"行业配置集中在{top_industry.get('industry')}，占净值约 {top_industry.get('weight_pct'):.2f}%"
+            )
+        elif industry_allocation:
+            reasons.append("已获取最新行业配置，可辅助判断主题暴露")
+        else:
+            gaps.append("缺少行业配置数据，暂不能判断主题暴露")
+
+        short_fee = fees.get("short_term_redemption_fee_pct")
+        if short_fee is not None and short_fee > 0:
+            risks.append(f"短持有期赎回费率最高约 {short_fee:.2f}%，不适合频繁短线进出")
 
         if drawdown is not None and drawdown <= -20:
             risks.append(f"观察期最大回撤约 {drawdown:.2f}%，波动承受要求较高")
@@ -421,6 +844,7 @@ class FundService:
         returns: Dict[str, Optional[float]],
         risk: Dict[str, Any],
         label: str,
+        reference_valuation: Optional[Dict[str, Any]] = None,
     ) -> str:
         name = profile.get("fund_name") or profile["fund_code"]
         fund_type = profile.get("fund_type") or "类型待确认"
@@ -435,9 +859,23 @@ class FundService:
             perf_parts.append(f"近 3 月 {three_month:.2f}%")
         perf_text = "，".join(perf_parts) if perf_parts else "阶段收益暂不足"
         drawdown_text = f"最大回撤约 {drawdown:.2f}%" if drawdown is not None else "回撤数据不足"
+        reference_valuation = reference_valuation or {}
+        reference_name = reference_valuation.get("reference_name")
+        pe = reference_valuation.get("pe_ttm")
+        pb = reference_valuation.get("pb")
+        if reference_name and (pe is not None or pb is not None):
+            valuation_text = f"参考{reference_name}"
+            valuation_parts = []
+            if pe is not None:
+                valuation_parts.append(f"PE {pe:.2f}")
+            if pb is not None:
+                valuation_parts.append(f"PB {pb:.2f}")
+            valuation_text = f"{valuation_text}{'、'.join(valuation_parts)}。"
+        else:
+            valuation_text = "PE/PB 估值参考尚未稳定匹配，需要结合跟踪指数或重仓资产补充。"
 
         return (
             f"{name} 当前识别为{fund_type}，综合标签为「{label}」。"
-            f"{perf_text}，{drawdown_text}。"
-            "第一版分析基于公开净值和基础资料，后续接入你的持仓成本后可进一步判断真实盈亏和组合风险。"
+            f"{perf_text}，{drawdown_text}。{valuation_text}"
+            "分析基于公开净值、披露持仓、费用和可用估值参考；接入你的持仓成本后可进一步判断真实盈亏和组合风险。"
         )

@@ -17,6 +17,18 @@ function numberText(value?: number | null, digits = 4): string {
   return value.toFixed(digits);
 }
 
+function ratioText(value?: number | null): string {
+  if (value == null) return '--';
+  return value.toFixed(2);
+}
+
+function percentileTone(value?: number | null): string {
+  if (value == null) return 'text-foreground';
+  if (value >= 80) return 'text-danger';
+  if (value <= 25) return 'text-success';
+  return 'text-warning';
+}
+
 function labelVariant(label: string): 'success' | 'warning' | 'danger' | 'info' {
   if (label === '候选') return 'success';
   if (label === '回避') return 'danger';
@@ -54,6 +66,16 @@ const Metric: React.FC<{ label: string; value: string; tone?: string }> = ({ lab
   <div className="rounded-2xl border border-subtle bg-surface/60 p-4">
     <div className="text-xs text-muted-text">{label}</div>
     <div className={`mt-2 text-lg font-semibold ${tone || 'text-foreground'}`}>{value}</div>
+  </div>
+);
+
+const CompactRow: React.FC<{ left: string; right: string; meta?: string; tone?: string }> = ({ left, right, meta, tone }) => (
+  <div className="flex items-center justify-between gap-3 rounded-xl border border-subtle bg-surface/50 px-3 py-2 text-sm">
+    <div className="min-w-0">
+      <div className="truncate text-secondary-text">{left}</div>
+      {meta ? <div className="mt-0.5 truncate text-xs text-muted-text">{meta}</div> : null}
+    </div>
+    <div className={`shrink-0 font-mono ${tone || 'text-foreground'}`}>{right}</div>
   </div>
 );
 
@@ -114,7 +136,12 @@ const FundsPage: React.FC = () => {
 
   const latest = result?.latestNav;
   const profile = result?.profile;
+  const valuation = result?.referenceValuation;
+  const peer = result?.peerAnalysis;
+  const fees = result?.fees;
   const navTail = result?.nav.slice(-5).reverse() || [];
+  const holdings = result?.holdings || [];
+  const industries = result?.industryAllocation || [];
 
   return (
     <div className="flex min-h-full flex-col gap-4 p-3 md:p-5">
@@ -208,9 +235,67 @@ const FundsPage: React.FC = () => {
               <Metric label="累计净值" value={numberText(latest?.accumulatedNav)} />
             </div>
 
+            <Card title="估值参考" subtitle={valuation?.referenceName || 'Valuation'}>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <Metric label="参考 PE" value={ratioText(valuation?.peTtm)} />
+                <Metric label="PE 历史分位" value={pct(valuation?.pePercentile)} tone={percentileTone(valuation?.pePercentile)} />
+                <Metric label="参考 PB" value={ratioText(valuation?.pb)} />
+                <Metric label="PB 历史分位" value={pct(valuation?.pbPercentile)} tone={percentileTone(valuation?.pbPercentile)} />
+              </div>
+              <div className="mt-3 rounded-2xl border border-subtle bg-surface/50 p-3 text-sm text-secondary-text">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant={valuation?.referenceType === 'index' ? 'info' : 'default'}>
+                    {valuation?.referenceType === 'index' ? '指数估值' : '估值待映射'}
+                  </Badge>
+                  <span>参考对象：{valuation?.referenceName || '待匹配'}</span>
+                  {valuation?.asOfDate ? <span>日期：{valuation.asOfDate}</span> : null}
+                </div>
+                {valuation?.notes?.length ? (
+                  <ul className="mt-2 space-y-1 text-xs text-muted-text">
+                    {valuation.notes.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                ) : null}
+              </div>
+            </Card>
+
             <div className="grid gap-4 lg:grid-cols-2">
               <ListBlock title="核心理由" items={result.reasons} empty="暂无正向理由，建议先观察数据完整性。" />
               <ListBlock title="主要风险" items={result.risks} empty="暂无显著风险，但仍需结合持仓和费用确认。" />
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <Card title="重仓持股" subtitle={holdings[0]?.reportPeriod || 'Top holdings'}>
+                {holdings.length ? (
+                  <div className="space-y-2">
+                    {holdings.slice(0, 10).map((item) => (
+                      <CompactRow
+                        key={`${item.reportPeriod}-${item.stockCode}-${item.stockName}`}
+                        left={item.stockName || item.stockCode}
+                        meta={item.stockCode}
+                        right={pct(item.weightPct)}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-text">暂无重仓股披露数据，无法判断持仓集中度。</p>
+                )}
+              </Card>
+
+              <Card title="行业配置" subtitle={industries[0]?.reportDate || 'Industry'}>
+                {industries.length ? (
+                  <div className="space-y-2">
+                    {industries.slice(0, 8).map((item) => (
+                      <CompactRow
+                        key={`${item.reportDate}-${item.industry}`}
+                        left={item.industry}
+                        right={pct(item.weightPct)}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-text">暂无行业配置披露数据，主题暴露需要继续补充。</p>
+                )}
+              </Card>
             </div>
           </section>
 
@@ -234,6 +319,40 @@ const FundsPage: React.FC = () => {
                   <span className="text-right text-secondary-text">{profile?.custodian || '待确认'}</span>
                 </div>
               </div>
+            </Card>
+
+            <Card title="同类对比" subtitle={peer?.period || 'Peer'}>
+              {peer ? (
+                <div className="space-y-2">
+                  <CompactRow left="风险收益评分" right={ratioText(peer.riskReturnScore)} />
+                  <CompactRow left="抗风险波动评分" right={ratioText(peer.antiRiskScore)} />
+                  <CompactRow left="夏普比率" right={ratioText(peer.sharpeRatio)} />
+                  <CompactRow left="同类源最大回撤" right={pct(peer.maxDrawdownPct)} tone="text-danger" />
+                </div>
+              ) : (
+                <p className="text-sm text-muted-text">暂无同类风险收益数据。</p>
+              )}
+            </Card>
+
+            <Card title="费用规则" subtitle="Fees">
+              <div className="space-y-2">
+                <CompactRow left="管理费" right={pct(fees?.managementFeePct)} />
+                <CompactRow left="托管费" right={pct(fees?.custodianFeePct)} />
+                <CompactRow left="销售服务费" right={pct(fees?.salesServiceFeePct)} />
+                <CompactRow left="短持有赎回费" right={pct(fees?.shortTermRedemptionFeePct)} tone={(fees?.shortTermRedemptionFeePct || 0) > 0 ? 'text-danger' : undefined} />
+              </div>
+              {fees?.items?.length ? (
+                <div className="mt-3 space-y-2">
+                  {fees.items.slice(0, 5).map((item) => (
+                    <CompactRow
+                      key={`${item.feeType}-${item.condition}-${item.feePct}`}
+                      left={item.condition || item.feeType}
+                      meta={item.feeType}
+                      right={pct(item.feePct)}
+                    />
+                  ))}
+                </div>
+              ) : null}
             </Card>
 
             <Card title="最近净值" subtitle="NAV">
