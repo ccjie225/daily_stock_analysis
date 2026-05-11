@@ -14,7 +14,7 @@ const FundHoldingsPage: React.FC = () => {
         <span className="label-uppercase">场外基金账户</span>
         <h1 className="mt-1 text-2xl font-semibold text-foreground">基金持仓</h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-secondary-text">
-          这里放你的个人基金账户数据，和“基金分析”里的单只基金公开资料分开。当前先支持截图识别和人工核对，保存入库、组合收益与成本分析后续接入。
+          这里放你的个人基金账户数据，和“基金分析”里的单只基金公开资料分开。当前支持截图识别、人工核对和保存入库；组合收益与成本分析后续接入。
         </p>
       </header>
 
@@ -39,7 +39,7 @@ const FundHoldingsPage: React.FC = () => {
               </div>
               <div className="rounded-xl border border-subtle bg-surface/50 px-3 py-2 text-sm">
                 <div className="text-secondary-text">保存入库</div>
-                <div className="mt-1 font-mono text-muted-text">下一步</div>
+                <div className="mt-1 font-mono text-foreground">可用</div>
               </div>
               <div className="rounded-xl border border-subtle bg-surface/50 px-3 py-2 text-sm">
                 <div className="text-secondary-text">收益计算</div>

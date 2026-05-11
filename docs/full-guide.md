@@ -913,7 +913,7 @@ STOCK_LIST=600519,hk00700,hk01810
 
 `/fund-holdings` 基金持仓页支持上传支付宝、天天基金、养基宝等场外基金持仓截图。系统会通过 Vision LLM 识别基金代码、基金名称、平台、持有金额、份额、成本、净值、持有收益和昨日收益等字段。`/funds` 页面只保留单只基金公开资料分析，避免把账户持仓和基金产品分析混在同一视图。
 
-当前能力是导入预览：识别结果只用于人工核对，不会自动写入真实持仓库，也不会参与现有股票或基金收益计算。后端接口为 `POST /api/v1/funds/import-holdings-image`，表单字段名为 `file`，支持 JPEG、PNG、WebP、GIF，单张图片最大 5MB。Vision 模型配置沿用图片识别能力，详见 [LLM 配置指南 - Vision](LLM_CONFIG_GUIDE.md#41-vision-模型图片股票代码提取)。
+识别后可人工核对并保存到本地持仓库，保存接口为 `POST /api/v1/funds/holdings`，列表接口为 `GET /api/v1/funds/holdings`。保存时金额、份额和收益字段仍按字符串原样存储，暂不参与现有股票或基金收益计算。截图识别接口为 `POST /api/v1/funds/import-holdings-image`，表单字段名为 `file`，支持 JPEG、PNG、WebP、GIF，单张图片最大 5MB。Vision 模型配置沿用图片识别能力，详见 [LLM 配置指南 - Vision](LLM_CONFIG_GUIDE.md#41-vision-模型图片股票代码提取)。
 
 ### 多模型切换
 

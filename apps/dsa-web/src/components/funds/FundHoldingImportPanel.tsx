@@ -1,9 +1,13 @@
 import type React from 'react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fundsApi } from '../../api/funds';
 import { getParsedApiError } from '../../api/error';
 import { Badge, Button, Card, InlineAlert } from '../common';
-import type { FundHoldingImportItem, FundHoldingImportResponse } from '../../types/funds';
+import type {
+  FundHoldingImportItem,
+  FundHoldingImportResponse,
+  FundSavedHoldingItem,
+} from '../../types/funds';
 
 const HOLDING_IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
 const HOLDING_IMAGE_MAX = 5 * 1024 * 1024;
@@ -41,7 +45,29 @@ export const FundHoldingImportPanel: React.FC = () => {
   const [holdingImport, setHoldingImport] = useState<FundHoldingImportResponse | null>(null);
   const [holdingImportError, setHoldingImportError] = useState('');
   const [holdingImportLoading, setHoldingImportLoading] = useState(false);
+  const [savedHoldings, setSavedHoldings] = useState<FundSavedHoldingItem[]>([]);
+  const [saveMessage, setSaveMessage] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(false);
   const holdingImageInputRef = useRef<HTMLInputElement | null>(null);
+
+  const loadSavedHoldings = async () => {
+    setListLoading(true);
+    try {
+      const data = await fundsApi.listHoldings();
+      setSavedHoldings(data.items);
+    } catch (err) {
+      const parsed = getParsedApiError(err);
+      setSaveError(parsed.message || '读取已保存基金持仓失败');
+    } finally {
+      setListLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadSavedHoldings();
+  }, []);
 
   const importHoldingImage = async (file: File) => {
     const ext = `.${(file.name.split('.').pop() || '').toLowerCase()}`;
@@ -55,6 +81,8 @@ export const FundHoldingImportPanel: React.FC = () => {
     }
 
     setHoldingImportError('');
+    setSaveError('');
+    setSaveMessage('');
     setHoldingImportLoading(true);
     try {
       const data = await fundsApi.importHoldingsImage(file);
@@ -86,129 +114,203 @@ export const FundHoldingImportPanel: React.FC = () => {
     if (!holdingImportLoading) holdingImageInputRef.current?.click();
   };
 
+  const saveRecognizedHoldings = async () => {
+    if (!importedHoldings.length || saveLoading) return;
+
+    setSaveError('');
+    setSaveMessage('');
+    setSaveLoading(true);
+    try {
+      const data = await fundsApi.saveHoldings(importedHoldings);
+      setSaveMessage(`已保存 ${data.savedCount} 条基金持仓`);
+      void loadSavedHoldings();
+    } catch (err) {
+      const parsed = getParsedApiError(err);
+      setSaveError(parsed.message || '保存基金持仓失败');
+    } finally {
+      setSaveLoading(false);
+    }
+  };
+
   const importedHoldings = holdingImport?.items || [];
   const importWarnings = holdingImport?.warnings || [];
 
   return (
-    <Card title="我的基金持仓" subtitle="My position">
-      <input
-        ref={holdingImageInputRef}
-        type="file"
-        accept={HOLDING_IMAGE_EXT.join(',')}
-        className="hidden"
-        onChange={onHoldingImageSelected}
-      />
-      <p className="text-sm leading-6 text-secondary-text">
-        支持上传支付宝、天天基金、养基宝等场外基金持仓截图。当前版本只做识别预览和人工核对，不会自动写入真实持仓库。
-      </p>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="secondary"
-          isLoading={holdingImportLoading}
-          loadingText="识别中..."
-          onClick={openHoldingImagePicker}
-        >
-          导入持仓截图
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          disabled={!holdingImport || holdingImportLoading}
-          onClick={() => {
-            setHoldingImport(null);
-            setHoldingImportError('');
-          }}
-        >
-          清空结果
-        </Button>
-      </div>
-
-      <InlineAlert
-        className="mt-3"
-        variant="warning"
-        title="先核对再使用"
-        message="OCR 可能误读金额、份额或收益率，识别结果暂不参与收益计算，也不会影响现有股票分析。"
-      />
-
-      {holdingImportError ? (
-        <InlineAlert className="mt-3" variant="danger" title="导入失败" message={holdingImportError} />
-      ) : null}
-
-      {importWarnings.length ? (
-        <div className="mt-3 rounded-2xl border border-warning/20 bg-warning/10 p-3 text-xs leading-5 text-warning">
-          {importWarnings.map((warning) => (
-            <div key={warning}>{warning}</div>
-          ))}
-        </div>
-      ) : null}
-
-      {importedHoldings.length ? (
-        <div className="mt-3 space-y-3">
-          {importedHoldings.map((item, index) => {
-            const confidence = confidenceMeta(item.confidence);
-            return (
-              <div
-                key={holdingImportKey(item, index)}
-                className="rounded-2xl border border-subtle bg-surface/60 p-3"
-              >
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold text-foreground">
-                      {item.fundName || item.fundCode || '未命名基金'}
-                    </div>
-                    <div className="mt-1 text-xs text-muted-text">
-                      {item.fundCode || '代码待核对'} · {item.platform || '平台未知'}
-                    </div>
-                  </div>
-                  <Badge variant={confidence.variant}>{confidence.label}</Badge>
-                </div>
-                <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                  <CompactRow left="持有金额" right={holdingValue(item.holdingAmount)} />
-                  <CompactRow left="持有份额" right={holdingValue(item.holdingShare)} />
-                  <CompactRow left="持仓成本" right={holdingValue(item.costAmount)} />
-                  <CompactRow left="成本净值" right={holdingValue(item.costNav)} />
-                  <CompactRow left="最新净值" right={holdingValue(item.latestNav)} />
-                  <CompactRow
-                    left="持有收益"
-                    right={holdingValue(item.holdingGain)}
-                    meta={holdingValue(item.holdingGainPct)}
-                  />
-                  <CompactRow left="昨日收益" right={holdingValue(item.yesterdayGain)} />
-                  <CompactRow left="币种" right={item.currency || 'CNY'} />
-                </div>
-                {item.warnings?.length ? (
-                  <div className="mt-3 space-y-1 text-xs text-warning">
-                    {item.warnings.map((warning) => (
-                      <div key={warning}>{warning}</div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
-          <Button type="button" size="sm" variant="outline" disabled className="w-full">
-            保存持仓（下一步）
+    <div className="space-y-4">
+      <Card title="我的基金持仓" subtitle="My position">
+        <input
+          ref={holdingImageInputRef}
+          type="file"
+          accept={HOLDING_IMAGE_EXT.join(',')}
+          className="hidden"
+          onChange={onHoldingImageSelected}
+        />
+        <p className="text-sm leading-6 text-secondary-text">
+          支持上传支付宝、天天基金、养基宝等场外基金持仓截图。识别后先人工核对，再保存到本地持仓库。
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            isLoading={holdingImportLoading}
+            loadingText="识别中..."
+            onClick={openHoldingImagePicker}
+          >
+            导入持仓截图
           </Button>
-          <p className="text-xs leading-5 text-muted-text">
-            下一步再接保存、组合收益和真实成本分析；现在先把截图识别入口打通。
-          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={!holdingImport || holdingImportLoading}
+            onClick={() => {
+              setHoldingImport(null);
+              setHoldingImportError('');
+              setSaveError('');
+              setSaveMessage('');
+            }}
+          >
+            清空结果
+          </Button>
         </div>
-      ) : holdingImport ? (
+
         <InlineAlert
           className="mt-3"
-          variant="info"
-          title="未识别到基金持仓"
-          message="可以换一张包含基金名称、金额或份额的持仓明细截图重试。"
+          variant="warning"
+          title="先核对再保存"
+          message="OCR 可能误读金额、份额或收益率。保存后的字段仍只作为持仓记录展示，暂不参与收益计算。"
         />
-      ) : (
-        <div className="mt-3 space-y-2">
-          <CompactRow left="导入方式" right="可导入" meta="截图识别" />
-          <CompactRow left="核心字段" right="预览核对" meta="金额 / 份额 / 成本" />
-        </div>
-      )}
-    </Card>
+
+        {holdingImportError ? (
+          <InlineAlert className="mt-3" variant="danger" title="导入失败" message={holdingImportError} />
+        ) : null}
+        {saveError ? (
+          <InlineAlert className="mt-3" variant="danger" title="保存失败" message={saveError} />
+        ) : null}
+        {saveMessage ? (
+          <InlineAlert className="mt-3" variant="success" title="保存成功" message={saveMessage} />
+        ) : null}
+
+        {importWarnings.length ? (
+          <div className="mt-3 rounded-2xl border border-warning/20 bg-warning/10 p-3 text-xs leading-5 text-warning">
+            {importWarnings.map((warning) => (
+              <div key={warning}>{warning}</div>
+            ))}
+          </div>
+        ) : null}
+
+        {importedHoldings.length ? (
+          <div className="mt-3 space-y-3">
+            {importedHoldings.map((item, index) => {
+              const confidence = confidenceMeta(item.confidence);
+              return (
+                <div
+                  key={holdingImportKey(item, index)}
+                  className="rounded-2xl border border-subtle bg-surface/60 p-3"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-foreground">
+                        {item.fundName || item.fundCode || '未命名基金'}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-text">
+                        {item.fundCode || '代码待核对'} · {item.platform || '平台未知'}
+                      </div>
+                    </div>
+                    <Badge variant={confidence.variant}>{confidence.label}</Badge>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <CompactRow left="持有金额" right={holdingValue(item.holdingAmount)} />
+                    <CompactRow left="持有份额" right={holdingValue(item.holdingShare)} />
+                    <CompactRow left="持仓成本" right={holdingValue(item.costAmount)} />
+                    <CompactRow left="成本净值" right={holdingValue(item.costNav)} />
+                    <CompactRow left="最新净值" right={holdingValue(item.latestNav)} />
+                    <CompactRow
+                      left="持有收益"
+                      right={holdingValue(item.holdingGain)}
+                      meta={holdingValue(item.holdingGainPct)}
+                    />
+                    <CompactRow left="昨日收益" right={holdingValue(item.yesterdayGain)} />
+                    <CompactRow left="币种" right={item.currency || 'CNY'} />
+                  </div>
+                  {item.warnings?.length ? (
+                    <div className="mt-3 space-y-1 text-xs text-warning">
+                      {item.warnings.map((warning) => (
+                        <div key={warning}>{warning}</div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-full"
+              isLoading={saveLoading}
+              loadingText="保存中..."
+              onClick={() => void saveRecognizedHoldings()}
+            >
+              保存持仓
+            </Button>
+          </div>
+        ) : holdingImport ? (
+          <InlineAlert
+            className="mt-3"
+            variant="info"
+            title="未识别到基金持仓"
+            message="可以换一张包含基金名称、金额或份额的持仓明细截图重试。"
+          />
+        ) : (
+          <div className="mt-3 space-y-2">
+            <CompactRow left="导入方式" right="可导入" meta="截图识别" />
+            <CompactRow left="核心字段" right="预览核对" meta="金额 / 份额 / 成本" />
+          </div>
+        )}
+      </Card>
+
+      <Card title="已保存持仓" subtitle={listLoading ? 'Loading' : `${savedHoldings.length} items`}>
+        {savedHoldings.length ? (
+          <div className="space-y-3">
+            {savedHoldings.map((item, index) => {
+              const confidence = confidenceMeta(item.confidence);
+              return (
+                <div
+                  key={item.id || holdingImportKey(item, index)}
+                  className="rounded-2xl border border-subtle bg-surface/60 p-3"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-foreground">
+                        {item.fundName || item.fundCode || '未命名基金'}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-text">
+                        {item.fundCode || '代码待核对'} · {item.platform || '平台未知'}
+                      </div>
+                    </div>
+                    <Badge variant={confidence.variant}>{confidence.label}</Badge>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <CompactRow left="持有金额" right={holdingValue(item.holdingAmount)} />
+                    <CompactRow left="持有份额" right={holdingValue(item.holdingShare)} />
+                    <CompactRow left="持仓成本" right={holdingValue(item.costAmount)} />
+                    <CompactRow left="持有收益" right={holdingValue(item.holdingGain)} meta={holdingValue(item.holdingGainPct)} />
+                  </div>
+                  <div className="mt-2 text-xs text-muted-text">
+                    更新时间：{item.updatedAt || '--'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-sm leading-6 text-muted-text">
+            {listLoading ? '正在读取已保存持仓...' : '还没有保存持仓。识别并核对后点击“保存持仓”。'}
+          </p>
+        )}
+      </Card>
+    </div>
   );
 };

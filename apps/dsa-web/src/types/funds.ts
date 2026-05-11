@@ -98,6 +98,22 @@ export interface FundHoldingImportResponse {
   warnings: string[];
 }
 
+export interface FundSavedHoldingItem extends FundHoldingImportItem {
+  id: number;
+  source: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface FundHoldingSaveResponse {
+  savedCount: number;
+  items: FundSavedHoldingItem[];
+}
+
+export interface FundHoldingListResponse {
+  items: FundSavedHoldingItem[];
+}
+
 export interface FundProfile {
   fundCode: string;
   fundName?: string | null;

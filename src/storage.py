@@ -595,6 +595,41 @@ class PortfolioFxRate(Base):
     )
 
 
+class FundPersonalHolding(Base):
+    """User-confirmed offsite fund holding preview.
+
+    Monetary fields are stored as strings exactly as confirmed from OCR/manual
+    input. This table is a holding record store, not a calculation ledger.
+    """
+
+    __tablename__ = 'fund_personal_holdings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dedup_hash = Column(String(64), nullable=False, unique=True, index=True)
+    fund_code = Column(String(6), index=True)
+    fund_name = Column(String(120))
+    platform = Column(String(32), nullable=False, default='未知', index=True)
+    holding_amount = Column(String(80))
+    holding_share = Column(String(80))
+    cost_amount = Column(String(80))
+    cost_nav = Column(String(80))
+    latest_nav = Column(String(80))
+    holding_gain = Column(String(80))
+    holding_gain_pct = Column(String(80))
+    yesterday_gain = Column(String(80))
+    currency = Column(String(8), nullable=False, default='CNY')
+    confidence = Column(String(16), nullable=False, default='medium')
+    source = Column(String(32), nullable=False, default='screenshot')
+    warnings_json = Column(Text)
+    raw_payload = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_fund_personal_holding_code_platform', 'fund_code', 'platform'),
+    )
+
+
 class ConversationMessage(Base):
     """
     Agent 对话历史记录表

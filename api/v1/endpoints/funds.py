@@ -12,18 +12,87 @@ from typing import Optional
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from api.v1.schemas.common import ErrorResponse
-from api.v1.schemas.funds import FundAnalysisResponse, FundHoldingImportItem, FundHoldingImportResponse
+from api.v1.schemas.funds import (
+    FundAnalysisResponse,
+    FundHoldingImportItem,
+    FundHoldingImportResponse,
+    FundHoldingListResponse,
+    FundHoldingSaveRequest,
+    FundHoldingSaveResponse,
+    FundSavedHoldingItem,
+)
 from src.services.fund_holding_image_extractor import (
     ALLOWED_MIME,
     MAX_SIZE_BYTES,
     extract_fund_holdings_from_image,
 )
+from src.services.fund_holding_service import FundHoldingBusyError, FundHoldingService
 from src.services.fund_service import FundNotFoundError, FundService, FundServiceError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 ALLOWED_MIME_STR = ", ".join(ALLOWED_MIME)
+
+
+@router.get(
+    "/holdings",
+    response_model=FundHoldingListResponse,
+    responses={500: {"description": "服务器错误", "model": ErrorResponse}},
+    summary="列出已保存的个人基金持仓",
+    description="返回已由用户确认保存的场外基金持仓记录。金额、份额和收益字段均为字符串预览值。",
+)
+def list_holdings(
+    limit: int = Query(200, ge=1, le=500, description="返回条数"),
+) -> FundHoldingListResponse:
+    try:
+        rows = FundHoldingService().list_holdings(limit=limit)
+        return FundHoldingListResponse(items=[FundSavedHoldingItem(**item) for item in rows])
+    except Exception as exc:
+        logger.error("查询个人基金持仓失败: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "查询个人基金持仓失败"},
+        ) from exc
+
+
+@router.post(
+    "/holdings",
+    response_model=FundHoldingSaveResponse,
+    responses={
+        200: {"description": "保存后的个人基金持仓"},
+        400: {"description": "请求无效", "model": ErrorResponse},
+        409: {"description": "持仓库繁忙", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="保存个人基金持仓",
+    description="保存截图识别后由用户确认的个人基金持仓。重复基金会按基金代码/名称和平台更新，不重复新增。",
+)
+def save_holdings(request: FundHoldingSaveRequest) -> FundHoldingSaveResponse:
+    try:
+        data = FundHoldingService().save_imported_holdings(
+            [item.dict() for item in request.items]
+        )
+        return FundHoldingSaveResponse(
+            saved_count=data["saved_count"],
+            items=[FundSavedHoldingItem(**item) for item in data["items"]],
+        )
+    except FundHoldingBusyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "fund_holding_busy", "message": str(exc)},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validation_error", "message": str(exc)},
+        ) from exc
+    except Exception as exc:
+        logger.error("保存个人基金持仓失败: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "保存个人基金持仓失败"},
+        ) from exc
 
 
 @router.post(

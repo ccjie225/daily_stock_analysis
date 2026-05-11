@@ -130,6 +130,34 @@ class FundHoldingImportResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list, description="全局识别风险提示")
 
 
+class FundSavedHoldingItem(FundHoldingImportItem):
+    """已保存的个人基金持仓"""
+
+    id: int = Field(..., description="持仓记录 ID")
+    source: str = Field("screenshot", description="来源")
+    created_at: Optional[str] = Field(None, description="创建时间")
+    updated_at: Optional[str] = Field(None, description="更新时间")
+
+
+class FundHoldingSaveRequest(BaseModel):
+    """保存个人基金持仓请求"""
+
+    items: List[FundHoldingImportItem] = Field(..., description="待保存的识别持仓")
+
+
+class FundHoldingSaveResponse(BaseModel):
+    """保存个人基金持仓响应"""
+
+    saved_count: int = Field(..., description="保存数量")
+    items: List[FundSavedHoldingItem] = Field(default_factory=list, description="保存后的持仓记录")
+
+
+class FundHoldingListResponse(BaseModel):
+    """个人基金持仓列表响应"""
+
+    items: List[FundSavedHoldingItem] = Field(default_factory=list, description="已保存的个人基金持仓")
+
+
 class FundProfile(BaseModel):
     """基金基础画像"""
 
