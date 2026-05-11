@@ -430,11 +430,16 @@ class FundService:
             condition = str(_first_value(row, ("条件或名称", "条件", "名称", "condition")) or "").strip()
             value = _to_decimal(_first_value(row, ("费用", "费率", "value")))
             value_float = _round_decimal(value, _RATIO_QUANT)
+            fee_text = f"{value_float:.2f}%" if value_float is not None else None
+            if value is not None and value > Decimal("100"):
+                value_float = None
+                fee_text = f"{_round_decimal(value, _RATIO_QUANT):.2f}元"
             if fee_type or condition or value is not None:
                 result["items"].append({
                     "fee_type": fee_type,
                     "condition": condition,
                     "fee_pct": value_float,
+                    "fee_text": fee_text,
                 })
 
             if "基金管理费" in condition:

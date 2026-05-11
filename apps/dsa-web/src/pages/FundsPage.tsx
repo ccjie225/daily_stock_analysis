@@ -348,7 +348,7 @@ const FundsPage: React.FC = () => {
                       key={`${item.feeType}-${item.condition}-${item.feePct}`}
                       left={item.condition || item.feeType}
                       meta={item.feeType}
-                      right={pct(item.feePct)}
+                      right={item.feeText || pct(item.feePct)}
                     />
                   ))}
                 </div>

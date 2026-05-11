@@ -89,6 +89,7 @@ class FundFeeItem(BaseModel):
     fee_type: str = Field("", description="费用类型")
     condition: str = Field("", description="条件或费用名称")
     fee_pct: Optional[float] = Field(None, description="费率")
+    fee_text: Optional[str] = Field(None, description="展示用费用文本")
 
 
 class FundFeeSummary(BaseModel):

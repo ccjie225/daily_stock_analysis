@@ -127,6 +127,7 @@ class TestFundService(unittest.TestCase):
         self.assertEqual(result["holdings"][0]["stock_name"], "贵州茅台")
         self.assertEqual(result["industry_allocation"][0]["industry"], "制造业")
         self.assertEqual(result["fees"]["management_fee_pct"], 0.5)
+        self.assertEqual(result["fees"]["items"][0]["fee_text"], "0.50%")
         self.assertIn(result["label"], {"候选", "观察"})
         self.assertTrue(result["reasons"])
         self.assertTrue(result["nav"])

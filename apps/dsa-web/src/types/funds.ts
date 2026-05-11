@@ -63,6 +63,7 @@ export interface FundFeeItem {
   feeType: string;
   condition: string;
   feePct?: number | null;
+  feeText?: string | null;
 }
 
 export interface FundFeeSummary {
