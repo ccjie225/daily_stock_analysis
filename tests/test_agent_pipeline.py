@@ -1463,6 +1463,119 @@ class TestAgentConstructionChain(unittest.TestCase):
         self.assertEqual(mock_completion.call_args.kwargs["temperature"], 1.0)
 
     @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_retries_stream_when_provider_requires_it(self, _mock_router):
+        """Agent calls should recover when a provider only accepts stream=true."""
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="openai/gpt-5.4",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=1.0,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+        calls = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs.copy())
+            if not kwargs.get("stream"):
+                raise RuntimeError("Stream must be set to true")
+            return iter([
+                {"choices": [{"delta": {"content": "agent "}}]},
+                {
+                    "choices": [{"delta": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+                },
+            ])
+
+        with patch("src.agent.llm_adapter.litellm.completion", side_effect=fake_completion):
+            result = adapter._call_litellm_model(
+                [{"role": "user", "content": "hi"}],
+                [],
+                "openai/gpt-5.4",
+            )
+
+        self.assertEqual(result.content, "agent ok")
+        self.assertEqual(result.usage["total_tokens"], 3)
+        self.assertFalse(calls[0].get("stream", False))
+        self.assertTrue(calls[1]["stream"])
+
+    @patch("src.agent.llm_adapter.Router")
+    def test_llm_adapter_stream_retry_preserves_tool_calls(self, _mock_router):
+        """Streaming tool_call deltas should be normalized for Agent execution."""
+        mock_cfg = SimpleNamespace(
+            agent_litellm_model="",
+            litellm_model="openai/gpt-5.4",
+            litellm_fallback_models=[],
+            llm_model_list=[],
+            llm_temperature=1.0,
+            gemini_api_keys=[],
+            anthropic_api_keys=[],
+            openai_api_keys=[],
+            deepseek_api_keys=[],
+            openai_base_url=None,
+        )
+
+        from src.agent.llm_adapter import LLMToolAdapter
+        adapter = LLMToolAdapter(config=mock_cfg)
+        tools = [{"type": "function", "function": {"name": "echo", "parameters": {}}}]
+        calls = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs.copy())
+            if not kwargs.get("stream"):
+                raise RuntimeError("Stream must be set to true")
+            return iter([
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {"name": "echo", "arguments": "{\"message\""},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {"index": 0, "function": {"arguments": ": \"hi\"}"}}
+                                ]
+                            }
+                        }
+                    ]
+                },
+            ])
+
+        with patch("src.agent.llm_adapter.litellm.completion", side_effect=fake_completion):
+            result = adapter._call_litellm_model(
+                [{"role": "user", "content": "hi"}],
+                tools,
+                "openai/gpt-5.4",
+            )
+
+        self.assertIsNone(result.content)
+        self.assertEqual(len(result.tool_calls), 1)
+        self.assertEqual(result.tool_calls[0].id, "call_1")
+        self.assertEqual(result.tool_calls[0].name, "echo")
+        self.assertEqual(result.tool_calls[0].arguments, {"message": "hi"})
+        self.assertEqual(calls[1]["tools"], tools)
+        self.assertTrue(calls[1]["stream"])
+
+    @patch("src.agent.llm_adapter.Router")
     def test_llm_adapter_normalizes_kimi_k26_temperature_for_yaml_alias(self, _mock_router):
         """Agent direct LiteLLM calls should normalize through routed YAML aliases."""
         mock_cfg = SimpleNamespace(

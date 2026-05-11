@@ -687,7 +687,59 @@ class SystemConfigService:
             LLMToolAdapter._register_custom_model_pricing()
 
             started_at = time.perf_counter()
-            response = litellm.completion(**call_kwargs)
+            try:
+                response = litellm.completion(**call_kwargs)
+            except Exception as exc:
+                if not self._llm_exception_requires_stream(exc):
+                    raise
+                stream_kwargs = dict(call_kwargs)
+                stream_kwargs["stream"] = True
+                response = litellm.completion(**stream_kwargs)
+                content = self._consume_llm_test_stream(response)
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
+                if not content:
+                    return self._build_llm_channel_result(
+                        success=False,
+                        message="LLM channel returned an empty streaming response",
+                        error="Streaming completion returned no text chunks",
+                        stage="response_parse",
+                        error_code="empty_response",
+                        retryable=False,
+                        details={"response_error": "empty stream", "reason": "stream_no_content"},
+                        resolved_protocol=resolved_protocol or None,
+                        resolved_model=resolved_model,
+                        latency_ms=latency_ms,
+                        capability_results=self._build_skipped_capability_results(
+                            requested_capabilities,
+                            "base_test_failed",
+                            "Skipped because the base channel test did not pass",
+                        ),
+                    )
+                capability_results = (
+                    self._run_llm_capability_checks(
+                        litellm_module=litellm,
+                        resolved_model=resolved_model,
+                        selected_api_key=selected_api_key,
+                        base_url=base_url,
+                        timeout_seconds=timeout_seconds,
+                        capability_checks=requested_capabilities,
+                    )
+                    if requested_capabilities
+                    else {}
+                )
+                return self._build_llm_channel_result(
+                    success=True,
+                    message="LLM channel test succeeded",
+                    error=None,
+                    stage="chat_completion",
+                    error_code=None,
+                    retryable=False,
+                    details={"response_preview": content[:80], "transport": "stream"},
+                    resolved_protocol=resolved_protocol or None,
+                    resolved_model=resolved_model,
+                    latency_ms=latency_ms,
+                    capability_results=capability_results,
+                )
             latency_ms = int((time.perf_counter() - started_at) * 1000)
             content, parse_error_code, parse_error, parse_reason = self._extract_llm_completion_content(response)
             if parse_error_code:
@@ -759,6 +811,22 @@ class SystemConfigService:
                     "Skipped because the base channel test did not pass",
                 ),
             )
+
+    @staticmethod
+    def _llm_exception_requires_stream(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "stream must be set to true" in text or "stream=true" in text
+
+    @classmethod
+    def _consume_llm_test_stream(cls, stream: Any) -> str:
+        chunks: List[str] = []
+        for index, chunk in enumerate(stream):
+            content = cls._extract_llm_stream_chunk_content(chunk)
+            if content:
+                chunks.append(content)
+            if index + 1 >= cls._LLM_STREAM_CHUNK_LIMIT:
+                break
+        return "".join(chunks).strip()
 
     @classmethod
     def _normalize_llm_capability_checks(cls, capability_checks: Sequence[str]) -> List[str]:

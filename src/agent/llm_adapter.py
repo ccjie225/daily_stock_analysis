@@ -422,27 +422,46 @@ class LLMToolAdapter:
         if tools:
             call_kwargs["tools"] = tools
 
+        try:
+            response = self._dispatch_litellm_completion(call_kwargs, model)
+        except Exception as exc:
+            if not self._llm_exception_requires_stream(exc):
+                raise
+
+            stream_kwargs = dict(call_kwargs)
+            stream_kwargs["stream"] = True
+            logger.info("Agent LLM model %s requires stream=true; retrying with streaming", model)
+            stream_response = self._dispatch_litellm_completion(stream_kwargs, model)
+            return self._parse_litellm_stream_response(stream_response, model)
+
+        return self._parse_litellm_response(response, model)
+
+    def _dispatch_litellm_completion(self, call_kwargs: Dict[str, Any], model: str) -> Any:
+        """Dispatch a completion call through Router when configured, otherwise direct LiteLLM."""
         # Use Router for primary model (multi-key), direct litellm for others
         use_channel_router = self._has_channel_config()
         _router_model_names = set(get_configured_llm_models(self._config.llm_model_list))
         agent_primary_model = get_effective_agent_primary_model(self._config)
         if use_channel_router and self._router and model in _router_model_names:
             # Channel / YAML path: Router manages all models in its model_list
-            response = self._router.completion(**call_kwargs)
-        elif self._router and model == agent_primary_model and not use_channel_router:
+            return self._router.completion(**call_kwargs)
+        if self._router and model == agent_primary_model and not use_channel_router:
             # Legacy path: Router for primary model multi-key
-            response = self._router.completion(**call_kwargs)
-        else:
-            # Legacy/direct-env path: direct call (also handles direct-env
-            # providers like groq/ or bedrock/ that are not in the Router
-            # model_list even when channel mode is active)
-            keys = get_api_keys_for_model(model, self._config)
-            if keys:
-                call_kwargs["api_key"] = keys[0]
-            call_kwargs.update(extra_litellm_params(model, self._config))
-            response = litellm.completion(**call_kwargs)
+            return self._router.completion(**call_kwargs)
 
-        return self._parse_litellm_response(response, model)
+        # Legacy/direct-env path: direct call (also handles direct-env
+        # providers like groq/ or bedrock/ that are not in the Router
+        # model_list even when channel mode is active)
+        keys = get_api_keys_for_model(model, self._config)
+        if keys:
+            call_kwargs["api_key"] = keys[0]
+        call_kwargs.update(extra_litellm_params(model, self._config))
+        return litellm.completion(**call_kwargs)
+
+    @staticmethod
+    def _llm_exception_requires_stream(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "stream must be set to true" in text or "stream=true" in text
 
     def _get_temperature(self) -> float:
         """Return the raw configured temperature before per-model normalization."""
@@ -487,6 +506,192 @@ class LLMToolAdapter:
                     "content": msg["content"],
                 })
         return openai_messages
+
+    @staticmethod
+    def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    @classmethod
+    def _content_to_text(cls, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if isinstance(text, str):
+                        parts.append(text)
+                else:
+                    text = cls._get_value(item, "text") or cls._get_value(item, "content")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts)
+        return ""
+
+    @classmethod
+    def _normalize_usage(cls, usage_obj: Any) -> Dict[str, Any]:
+        if not usage_obj:
+            return {}
+        usage: Dict[str, Any] = {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = cls._get_value(usage_obj, key)
+            if value is not None:
+                usage[key] = value
+        return usage
+
+    @classmethod
+    def _extract_stream_delta(cls, chunk: Any) -> Any:
+        choices = cls._get_value(chunk, "choices")
+        if not choices:
+            return None
+        choice = choices[0]
+        return cls._get_value(choice, "delta") or cls._get_value(choice, "message")
+
+    @classmethod
+    def _extract_stream_content(cls, chunk: Any) -> str:
+        delta = cls._extract_stream_delta(chunk)
+        if delta is None:
+            return ""
+        return cls._content_to_text(cls._get_value(delta, "content"))
+
+    @classmethod
+    def _extract_stream_reasoning(cls, chunk: Any) -> str:
+        delta = cls._extract_stream_delta(chunk)
+        if delta is None:
+            return ""
+        reasoning = cls._get_value(delta, "reasoning_content")
+        if reasoning is None:
+            reasoning = cls._get_value(delta, "reasoning")
+        return reasoning if isinstance(reasoning, str) else ""
+
+    @classmethod
+    def _extract_stream_tool_call_deltas(cls, chunk: Any) -> List[Any]:
+        delta = cls._extract_stream_delta(chunk)
+        if delta is None:
+            return []
+        tool_calls = cls._get_value(delta, "tool_calls")
+        return tool_calls if isinstance(tool_calls, list) else []
+
+    @classmethod
+    def _append_stream_tool_delta(cls, pending: Dict[int, Dict[str, Any]], raw_tool_call: Any) -> None:
+        raw_index = cls._get_value(raw_tool_call, "index")
+        index = raw_index if isinstance(raw_index, int) else len(pending)
+        entry = pending.setdefault(index, {"id": "", "name": "", "arguments": "", "thought_signature": None})
+
+        tool_id = cls._get_value(raw_tool_call, "id")
+        if tool_id:
+            entry["id"] = tool_id
+
+        function = cls._get_value(raw_tool_call, "function")
+        if function is not None:
+            name = cls._get_value(function, "name")
+            if name:
+                entry["name"] = f"{entry['name']}{name}" if entry["name"] and entry["name"] != name else name
+
+            arguments = cls._get_value(function, "arguments")
+            if isinstance(arguments, str):
+                entry["arguments"] += arguments
+            elif arguments is not None:
+                entry["arguments"] += json.dumps(arguments, ensure_ascii=False)
+
+            function_psf = cls._get_value(function, "provider_specific_fields")
+            if function_psf is not None:
+                entry["thought_signature"] = (
+                    function_psf.get("thought_signature")
+                    if isinstance(function_psf, dict)
+                    else cls._get_value(function_psf, "thought_signature", entry["thought_signature"])
+                )
+
+        psf = cls._get_value(raw_tool_call, "provider_specific_fields")
+        if psf is not None:
+            entry["thought_signature"] = (
+                psf.get("thought_signature")
+                if isinstance(psf, dict)
+                else cls._get_value(psf, "thought_signature", entry["thought_signature"])
+            )
+
+        signature = cls._get_value(raw_tool_call, "thought_signature")
+        if signature is not None:
+            entry["thought_signature"] = signature
+
+    @staticmethod
+    def _parse_tool_arguments(raw_arguments: str) -> Dict[str, Any]:
+        if not raw_arguments:
+            return {}
+        try:
+            parsed = json.loads(raw_arguments)
+            return parsed if isinstance(parsed, dict) else {"raw": raw_arguments}
+        except json.JSONDecodeError:
+            return {"raw": raw_arguments}
+
+    @classmethod
+    def _build_stream_tool_calls(cls, pending: Dict[int, Dict[str, Any]]) -> List[ToolCall]:
+        tool_calls: List[ToolCall] = []
+        for index in sorted(pending):
+            item = pending[index]
+            name = item.get("name") or ""
+            if not name:
+                continue
+            tool_calls.append(ToolCall(
+                id=item.get("id") or f"call_{uuid.uuid4().hex[:8]}",
+                name=name,
+                arguments=cls._parse_tool_arguments(item.get("arguments") or ""),
+                thought_signature=item.get("thought_signature"),
+            ))
+        return tool_calls
+
+    def _parse_litellm_stream_response(self, stream_response: Any, model: str) -> LLMResponse:
+        """Consume a LiteLLM streaming response into the same normalized response shape."""
+        chunks: List[str] = []
+        reasoning_chunks: List[str] = []
+        usage: Dict[str, Any] = {}
+        pending_tool_calls: Dict[int, Dict[str, Any]] = {}
+
+        try:
+            for chunk in stream_response:
+                normalized_usage = self._normalize_usage(self._get_value(chunk, "usage"))
+                if normalized_usage:
+                    usage = normalized_usage
+
+                content = self._extract_stream_content(chunk)
+                if content:
+                    chunks.append(content)
+
+                reasoning = self._extract_stream_reasoning(chunk)
+                if reasoning:
+                    reasoning_chunks.append(reasoning)
+
+                for raw_tool_call in self._extract_stream_tool_call_deltas(chunk):
+                    self._append_stream_tool_delta(pending_tool_calls, raw_tool_call)
+        finally:
+            close_stream = getattr(stream_response, "close", None)
+            if callable(close_stream):
+                try:
+                    close_stream()
+                except Exception:
+                    logger.debug("Failed to close Agent LLM stream response", exc_info=True)
+
+        content_text = "".join(chunks).strip()
+        reasoning_content = "".join(reasoning_chunks).strip()
+        tool_calls = self._build_stream_tool_calls(pending_tool_calls)
+        if not content_text and not tool_calls:
+            raise ValueError(f"{model} stream returned empty response")
+
+        provider_name = model.split("/")[0] if "/" in model else model
+        return LLMResponse(
+            content=content_text or None,
+            tool_calls=tool_calls,
+            reasoning_content=reasoning_content or None,
+            usage=usage,
+            provider=provider_name,
+            model=model,
+            raw=None,
+        )
 
     def _parse_litellm_response(self, response: Any, model: str) -> LLMResponse:
         """Parse litellm OpenAI-compatible response into LLMResponse."""
