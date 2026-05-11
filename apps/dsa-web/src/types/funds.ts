@@ -75,6 +75,29 @@ export interface FundFeeSummary {
   source?: string | null;
 }
 
+export interface FundHoldingImportItem {
+  fundCode?: string | null;
+  fundName?: string | null;
+  platform?: string | null;
+  holdingAmount?: string | null;
+  holdingShare?: string | null;
+  costAmount?: string | null;
+  costNav?: string | null;
+  latestNav?: string | null;
+  holdingGain?: string | null;
+  holdingGainPct?: string | null;
+  yesterdayGain?: string | null;
+  currency: string;
+  confidence: string;
+  warnings: string[];
+}
+
+export interface FundHoldingImportResponse {
+  items: FundHoldingImportItem[];
+  rawText?: string | null;
+  warnings: string[];
+}
+
 export interface FundProfile {
   fundCode: string;
   fundName?: string | null;

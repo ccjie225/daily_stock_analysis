@@ -770,6 +770,12 @@ Use `hk` prefix for HK stock codes:
 STOCK_LIST=600519,hk00700,hk01810
 ```
 
+### Offsite Fund Holding Screenshot Import
+
+The `/funds` page supports uploading offsite fund holding screenshots from Alipay, Tiantian Fund, Yangjibao, and similar platforms in the "My position" card. The system uses the configured Vision LLM to extract preview fields such as fund code, fund name, platform, holding amount, shares, cost, NAV, holding gain, and yesterday's gain.
+
+This is a preview-only import. Extracted rows must be manually checked, are not persisted to the real portfolio store, and do not affect existing stock or fund return calculations. The backend endpoint is `POST /api/v1/funds/import-holdings-image`, with multipart form field `file`. JPEG, PNG, WebP, and GIF are supported up to 5MB per image. Vision model setup follows the existing image extraction configuration; see [LLM Config Guide - Vision](LLM_CONFIG_GUIDE_EN.md#41-vision-model-image-stock-code-extraction).
+
 ### Multi-Model Switching
 
 Configure multiple models, system auto-switches:

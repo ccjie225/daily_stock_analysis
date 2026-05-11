@@ -7,16 +7,90 @@
 """
 
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 from api.v1.schemas.common import ErrorResponse
-from api.v1.schemas.funds import FundAnalysisResponse
+from api.v1.schemas.funds import FundAnalysisResponse, FundHoldingImportItem, FundHoldingImportResponse
+from src.services.fund_holding_image_extractor import (
+    ALLOWED_MIME,
+    MAX_SIZE_BYTES,
+    extract_fund_holdings_from_image,
+)
 from src.services.fund_service import FundNotFoundError, FundService, FundServiceError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+ALLOWED_MIME_STR = ", ".join(ALLOWED_MIME)
+
+
+@router.post(
+    "/import-holdings-image",
+    response_model=FundHoldingImportResponse,
+    responses={
+        200: {"description": "个人基金持仓截图识别结果"},
+        400: {"description": "图片无效或识别失败", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="从截图识别个人基金持仓",
+    description="上传支付宝、天天基金、养基宝等持仓截图，通过 Vision LLM 提取可核对的个人基金持仓字段。只返回预览，不写入持仓库。",
+)
+def import_holdings_image(
+    file: Optional[UploadFile] = File(None, description="图片文件（表单字段名 file）"),
+    include_raw: bool = Query(False, description="是否在结果中包含原始 LLM 响应"),
+) -> FundHoldingImportResponse:
+    if not file or not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "bad_request", "message": "未提供文件，请使用表单字段 file 上传图片"},
+        )
+
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type not in ALLOWED_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unsupported_type",
+                "message": f"不支持的类型: {content_type}。允许: {ALLOWED_MIME_STR}",
+            },
+        )
+
+    try:
+        data = file.file.read(MAX_SIZE_BYTES)
+        if file.file.read(1):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "file_too_large",
+                    "message": f"图片超过 {MAX_SIZE_BYTES // (1024 * 1024)}MB 限制",
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("读取基金持仓截图失败: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "read_failed", "message": "读取上传文件失败"},
+        ) from exc
+
+    try:
+        items, raw_text, warnings = extract_fund_holdings_from_image(data, content_type)
+        return FundHoldingImportResponse(
+            items=[FundHoldingImportItem(**item) for item in items],
+            raw_text=raw_text if include_raw else None,
+            warnings=warnings,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": "extract_failed", "message": str(exc)}) from exc
+    except Exception as exc:
+        logger.error("基金持仓截图识别失败: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "基金持仓截图识别失败"},
+        ) from exc
 
 
 @router.get(

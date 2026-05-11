@@ -103,6 +103,33 @@ class FundFeeSummary(BaseModel):
     source: Optional[str] = Field(None, description="数据源")
 
 
+class FundHoldingImportItem(BaseModel):
+    """个人基金持仓截图识别结果"""
+
+    fund_code: Optional[str] = Field(None, description="基金代码")
+    fund_name: Optional[str] = Field(None, description="基金名称")
+    platform: Optional[str] = Field(None, description="识别到的平台")
+    holding_amount: Optional[str] = Field(None, description="持有金额/市值，字符串原样预览")
+    holding_share: Optional[str] = Field(None, description="持有份额，字符串原样预览")
+    cost_amount: Optional[str] = Field(None, description="持仓成本/本金，字符串原样预览")
+    cost_nav: Optional[str] = Field(None, description="持仓成本净值/成本价，字符串原样预览")
+    latest_nav: Optional[str] = Field(None, description="最新净值，字符串原样预览")
+    holding_gain: Optional[str] = Field(None, description="持有收益/累计盈亏，字符串原样预览")
+    holding_gain_pct: Optional[str] = Field(None, description="持有收益率，字符串原样预览")
+    yesterday_gain: Optional[str] = Field(None, description="昨日收益，字符串原样预览")
+    currency: str = Field("CNY", description="币种")
+    confidence: str = Field("medium", description="识别置信度：high/medium/low")
+    warnings: List[str] = Field(default_factory=list, description="单条识别风险提示")
+
+
+class FundHoldingImportResponse(BaseModel):
+    """个人基金持仓截图导入预览响应"""
+
+    items: List[FundHoldingImportItem] = Field(default_factory=list, description="识别出的个人基金持仓")
+    raw_text: Optional[str] = Field(None, description="原始 Vision LLM 响应")
+    warnings: List[str] = Field(default_factory=list, description="全局识别风险提示")
+
+
 class FundProfile(BaseModel):
     """基金基础画像"""
 
