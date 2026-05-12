@@ -5,6 +5,7 @@ import type {
   FundHoldingImportItem,
   FundHoldingImportResponse,
   FundHoldingListResponse,
+  FundHoldingReviewResponse,
   FundHoldingSaveResponse,
 } from '../types/funds';
 
@@ -63,5 +64,13 @@ export const fundsApi = {
   async listHoldings(): Promise<FundHoldingListResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/funds/holdings');
     return toCamelCase<FundHoldingListResponse>(response.data);
+  },
+
+  async reviewHoldings(useAi = false): Promise<FundHoldingReviewResponse> {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/funds/holdings/review', {
+      params: { use_ai: useAi },
+      timeout: useAi ? 90000 : 60000,
+    });
+    return toCamelCase<FundHoldingReviewResponse>(response.data);
   },
 };

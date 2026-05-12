@@ -114,6 +114,43 @@ export interface FundHoldingListResponse {
   items: FundSavedHoldingItem[];
 }
 
+export interface FundHoldingReviewItem extends FundSavedHoldingItem {
+  latestPublicNav?: string | null;
+  latestNavDate?: string | null;
+  latestDailyReturnPct?: string | null;
+  estimatedMarketValue?: string | null;
+  valueChangeFromSaved?: string | null;
+  estimatedGain?: string | null;
+  estimatedGainPct?: string | null;
+  analysisLabel: string;
+  riskLevel: string;
+  advice: string;
+  reasons: string[];
+  risks: string[];
+  evidenceGaps: string[];
+  dataStatus: string;
+}
+
+export interface FundHoldingReviewSummary {
+  itemCount: number;
+  pricedCount: number;
+  highRiskCount: number;
+  avoidCount: number;
+  totalEstimatedMarketValue?: string | null;
+  totalValueChangeFromSaved?: string | null;
+  totalEstimatedGain?: string | null;
+  aiSummary?: string | null;
+  aiEnabled: boolean;
+  aiError?: string | null;
+  sourceNotes: string[];
+}
+
+export interface FundHoldingReviewResponse {
+  generatedAt: string;
+  summary: FundHoldingReviewSummary;
+  items: FundHoldingReviewItem[];
+}
+
 export interface FundProfile {
   fundCode: string;
   fundName?: string | null;

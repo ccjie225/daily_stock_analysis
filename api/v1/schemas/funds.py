@@ -158,6 +158,49 @@ class FundHoldingListResponse(BaseModel):
     items: List[FundSavedHoldingItem] = Field(default_factory=list, description="已保存的个人基金持仓")
 
 
+class FundHoldingReviewItem(FundSavedHoldingItem):
+    """个人基金持仓净值对齐与建议"""
+
+    latest_public_nav: Optional[str] = Field(None, description="最新公开单位净值")
+    latest_nav_date: Optional[str] = Field(None, description="最新净值日期")
+    latest_daily_return_pct: Optional[str] = Field(None, description="最新日涨跌幅")
+    estimated_market_value: Optional[str] = Field(None, description="按最新净值估算的当前市值")
+    value_change_from_saved: Optional[str] = Field(None, description="相对截图保存金额的估算变化")
+    estimated_gain: Optional[str] = Field(None, description="按最新净值和成本估算的累计盈亏")
+    estimated_gain_pct: Optional[str] = Field(None, description="按最新净值和成本估算的累计收益率")
+    analysis_label: str = Field("信息不足", description="基金公开分析标签")
+    risk_level: str = Field("unknown", description="风险等级")
+    advice: str = Field("", description="持仓建议")
+    reasons: List[str] = Field(default_factory=list, description="建议依据")
+    risks: List[str] = Field(default_factory=list, description="风险点")
+    evidence_gaps: List[str] = Field(default_factory=list, description="证据缺口")
+    data_status: str = Field("unknown", description="数据状态")
+
+
+class FundHoldingReviewSummary(BaseModel):
+    """个人基金持仓复盘摘要"""
+
+    item_count: int = Field(0, description="持仓条数")
+    priced_count: int = Field(0, description="完成净值估算条数")
+    high_risk_count: int = Field(0, description="高风险条数")
+    avoid_count: int = Field(0, description="回避标签条数")
+    total_estimated_market_value: Optional[str] = Field(None, description="估算总市值")
+    total_value_change_from_saved: Optional[str] = Field(None, description="相对截图保存金额的总变化")
+    total_estimated_gain: Optional[str] = Field(None, description="估算总盈亏")
+    ai_summary: Optional[str] = Field(None, description="LLM 增强组合复盘")
+    ai_enabled: bool = Field(False, description="是否成功生成 LLM 增强复盘")
+    ai_error: Optional[str] = Field(None, description="LLM 降级原因")
+    source_notes: List[str] = Field(default_factory=list, description="数据源说明")
+
+
+class FundHoldingReviewResponse(BaseModel):
+    """个人基金持仓净值对齐与建议响应"""
+
+    generated_at: str = Field(..., description="生成时间")
+    summary: FundHoldingReviewSummary
+    items: List[FundHoldingReviewItem] = Field(default_factory=list, description="持仓复盘明细")
+
+
 class FundProfile(BaseModel):
     """基金基础画像"""
 

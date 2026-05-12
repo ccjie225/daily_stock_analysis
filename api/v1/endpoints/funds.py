@@ -17,6 +17,7 @@ from api.v1.schemas.funds import (
     FundHoldingImportItem,
     FundHoldingImportResponse,
     FundHoldingListResponse,
+    FundHoldingReviewResponse,
     FundHoldingSaveRequest,
     FundHoldingSaveResponse,
     FundSavedHoldingItem,
@@ -26,6 +27,7 @@ from src.services.fund_holding_image_extractor import (
     MAX_SIZE_BYTES,
     extract_fund_holdings_from_image,
 )
+from src.services.fund_holding_review_service import FundHoldingReviewService
 from src.services.fund_holding_service import FundHoldingBusyError, FundHoldingService
 from src.services.fund_service import FundNotFoundError, FundService, FundServiceError
 
@@ -92,6 +94,28 @@ def save_holdings(request: FundHoldingSaveRequest) -> FundHoldingSaveResponse:
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": "保存个人基金持仓失败"},
+        ) from exc
+
+
+@router.get(
+    "/holdings/review",
+    response_model=FundHoldingReviewResponse,
+    responses={500: {"description": "服务器错误", "model": ErrorResponse}},
+    summary="复盘个人基金持仓",
+    description="基于已保存持仓、最新公开净值和基金公开分析生成净值对齐、估算浮动和持仓建议。",
+)
+def review_holdings(
+    limit: int = Query(50, ge=1, le=100, description="复盘条数"),
+    use_ai: bool = Query(False, description="是否调用 LLM 生成增强组合复盘"),
+) -> FundHoldingReviewResponse:
+    try:
+        data = FundHoldingReviewService().review_holdings(limit=limit, use_ai=use_ai)
+        return FundHoldingReviewResponse(**data)
+    except Exception as exc:
+        logger.error("复盘个人基金持仓失败: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "复盘个人基金持仓失败"},
         ) from exc
 
 

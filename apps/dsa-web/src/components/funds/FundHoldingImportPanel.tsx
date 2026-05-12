@@ -6,6 +6,7 @@ import { Badge, Button, Card, InlineAlert } from '../common';
 import type {
   FundHoldingImportItem,
   FundHoldingImportResponse,
+  FundHoldingReviewResponse,
   FundSavedHoldingItem,
 } from '../../types/funds';
 
@@ -50,6 +51,10 @@ export const FundHoldingImportPanel: React.FC = () => {
   const [saveError, setSaveError] = useState('');
   const [saveLoading, setSaveLoading] = useState(false);
   const [listLoading, setListLoading] = useState(false);
+  const [review, setReview] = useState<FundHoldingReviewResponse | null>(null);
+  const [reviewError, setReviewError] = useState('');
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [aiReviewLoading, setAiReviewLoading] = useState(false);
   const holdingImageInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadSavedHoldings = async () => {
@@ -123,12 +128,35 @@ export const FundHoldingImportPanel: React.FC = () => {
     try {
       const data = await fundsApi.saveHoldings(importedHoldings);
       setSaveMessage(`已保存 ${data.savedCount} 条基金持仓`);
+      setReview(null);
       void loadSavedHoldings();
     } catch (err) {
       const parsed = getParsedApiError(err);
       setSaveError(parsed.message || '保存基金持仓失败');
     } finally {
       setSaveLoading(false);
+    }
+  };
+
+  const loadReview = async (useAi = false) => {
+    if (useAi) {
+      setAiReviewLoading(true);
+    } else {
+      setReviewLoading(true);
+    }
+    setReviewError('');
+    try {
+      const data = await fundsApi.reviewHoldings(useAi);
+      setReview(data);
+    } catch (err) {
+      const parsed = getParsedApiError(err);
+      setReviewError(parsed.message || '基金持仓净值对齐失败');
+    } finally {
+      if (useAi) {
+        setAiReviewLoading(false);
+      } else {
+        setReviewLoading(false);
+      }
     }
   };
 
@@ -308,6 +336,124 @@ export const FundHoldingImportPanel: React.FC = () => {
         ) : (
           <p className="text-sm leading-6 text-muted-text">
             {listLoading ? '正在读取已保存持仓...' : '还没有保存持仓。识别并核对后点击“保存持仓”。'}
+          </p>
+        )}
+      </Card>
+
+      <Card title="净值对齐与建议" subtitle={review ? 'Latest NAV' : 'Review'}>
+        <p className="text-sm leading-6 text-secondary-text">
+          用最新公开净值对齐你已保存的基金份额，估算当前市值、相对截图变化和持仓建议。场外基金不是股票实时价，盘中估值只作为参考。
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={!savedHoldings.length || reviewLoading || aiReviewLoading}
+            isLoading={reviewLoading}
+            loadingText="刷新中..."
+            onClick={() => void loadReview(false)}
+          >
+            刷新净值对齐
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!savedHoldings.length || reviewLoading || aiReviewLoading}
+            isLoading={aiReviewLoading}
+            loadingText="生成中..."
+            onClick={() => void loadReview(true)}
+          >
+            AI增强建议
+          </Button>
+        </div>
+
+        {reviewError ? (
+          <InlineAlert className="mt-3" variant="danger" title="复盘失败" message={reviewError} />
+        ) : null}
+
+        {review ? (
+          <div className="mt-3 space-y-3">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <CompactRow left="可估值持仓" right={`${review.summary.pricedCount}/${review.summary.itemCount}`} />
+              <CompactRow left="估算总市值" right={holdingValue(review.summary.totalEstimatedMarketValue)} />
+              <CompactRow left="相对截图变化" right={holdingValue(review.summary.totalValueChangeFromSaved)} />
+              <CompactRow left="估算总盈亏" right={holdingValue(review.summary.totalEstimatedGain)} />
+            </div>
+
+            {review.summary.aiSummary ? (
+              <div className="rounded-2xl border border-cyan/20 bg-cyan/10 p-3 text-sm leading-6 text-foreground whitespace-pre-line">
+                {review.summary.aiSummary}
+              </div>
+            ) : review.summary.aiError ? (
+              <InlineAlert
+                variant="info"
+                title="AI增强未启用"
+                message={review.summary.aiError}
+              />
+            ) : null}
+
+            {review.items.map((item, index) => (
+              <div
+                key={`review-${item.id || index}`}
+                className="rounded-2xl border border-subtle bg-surface/60 p-3"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-foreground">
+                      {item.fundName || item.fundCode || '未命名基金'}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-text">
+                      {item.fundCode || '代码待核对'} · {item.analysisLabel} · {item.riskLevel}
+                    </div>
+                  </div>
+                  <Badge variant={item.analysisLabel === '回避' ? 'warning' : 'default'}>
+                    {item.dataStatus === 'priced' ? '已对齐' : '待补全'}
+                  </Badge>
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <CompactRow
+                    left="最新公开净值"
+                    right={holdingValue(item.latestPublicNav)}
+                    meta={item.latestNavDate || undefined}
+                  />
+                  <CompactRow left="最新日涨跌" right={holdingValue(item.latestDailyReturnPct)} />
+                  <CompactRow left="估算市值" right={holdingValue(item.estimatedMarketValue)} />
+                  <CompactRow left="相对截图变化" right={holdingValue(item.valueChangeFromSaved)} />
+                  <CompactRow left="估算盈亏" right={holdingValue(item.estimatedGain)} meta={holdingValue(item.estimatedGainPct)} />
+                </div>
+                <div className="mt-3 rounded-xl border border-subtle bg-card/40 px-3 py-2 text-sm leading-6 text-secondary-text">
+                  {item.advice}
+                </div>
+                {item.reasons.length ? (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-muted-text">
+                    {item.reasons.slice(0, 3).map((reason) => (
+                      <div key={reason}>依据：{reason}</div>
+                    ))}
+                  </div>
+                ) : null}
+                {item.evidenceGaps.length ? (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-warning">
+                    {item.evidenceGaps.slice(0, 3).map((gap) => (
+                      <div key={gap}>缺口：{gap}</div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+
+            {review.summary.sourceNotes.length ? (
+              <div className="space-y-1 text-xs leading-5 text-muted-text">
+                {review.summary.sourceNotes.map((note) => (
+                  <div key={note}>{note}</div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm leading-6 text-muted-text">
+            {savedHoldings.length ? '点击“刷新净值对齐”后查看估算浮动和持仓建议。' : '先导入并保存基金持仓，再做净值对齐。'}
           </p>
         )}
       </Card>
