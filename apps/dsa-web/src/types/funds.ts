@@ -122,6 +122,9 @@ export interface FundHoldingReviewItem extends FundSavedHoldingItem {
   valueChangeFromSaved?: string | null;
   estimatedGain?: string | null;
   estimatedGainPct?: string | null;
+  inferredHoldingShare?: string | null;
+  inferredCostAmount?: string | null;
+  valuationBasis?: string[];
   analysisLabel: string;
   riskLevel: string;
   advice: string;

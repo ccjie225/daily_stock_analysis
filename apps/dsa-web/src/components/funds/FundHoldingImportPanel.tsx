@@ -55,8 +55,8 @@ export const FundHoldingImportPanel: React.FC = () => {
   const [reviewError, setReviewError] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
   const [aiReviewLoading, setAiReviewLoading] = useState(false);
-  const [savedCodeDrafts, setSavedCodeDrafts] = useState<Record<number, string>>({});
-  const [codeSaveLoadingId, setCodeSaveLoadingId] = useState<number | null>(null);
+  const [savedDrafts, setSavedDrafts] = useState<Record<number, Partial<FundHoldingImportItem>>>({});
+  const [fieldSaveLoadingId, setFieldSaveLoadingId] = useState<number | null>(null);
   const holdingImageInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadSavedHoldings = async () => {
@@ -157,22 +157,49 @@ export const FundHoldingImportPanel: React.FC = () => {
     }
   };
 
-  const saveSavedHoldingCode = async (item: FundSavedHoldingItem) => {
-    if (codeSaveLoadingId) return;
-    const draftCode = normalizeFundCodeInput(savedCodeDrafts[item.id] ?? item.fundCode ?? '');
-    if (!/^\d{6}$/.test(draftCode)) {
+  const getSavedDraftValue = (
+    item: FundSavedHoldingItem,
+    field: keyof FundHoldingImportItem,
+  ): string => {
+    const draft = savedDrafts[item.id]?.[field];
+    const current = item[field];
+    return String(draft ?? current ?? '');
+  };
+
+  const updateSavedDraft = (
+    id: number,
+    patch: Partial<FundHoldingImportItem>,
+  ) => {
+    setSavedDrafts((current) => ({
+      ...current,
+      [id]: {
+        ...(current[id] || {}),
+        ...patch,
+      },
+    }));
+  };
+
+  const saveSavedHoldingFields = async (item: FundSavedHoldingItem) => {
+    if (fieldSaveLoadingId) return;
+    const draft = savedDrafts[item.id] || {};
+    const nextFundCode = normalizeFundCodeInput(String(draft.fundCode ?? item.fundCode ?? ''));
+    if (nextFundCode && !/^\d{6}$/.test(nextFundCode)) {
       setSaveError('基金代码需要填写 6 位数字，例如 110020');
       return;
     }
 
     setSaveError('');
     setSaveMessage('');
-    setCodeSaveLoadingId(item.id);
+    setFieldSaveLoadingId(item.id);
     try {
-      await fundsApi.saveHoldings([{ ...item, fundCode: draftCode }]);
-      setSaveMessage(`已更新 ${item.fundName || draftCode} 的基金代码`);
+      await fundsApi.saveHoldings([{
+        ...item,
+        ...draft,
+        fundCode: nextFundCode || null,
+      }]);
+      setSaveMessage(`已更新 ${item.fundName || nextFundCode || '持仓'} 的字段`);
       setReview(null);
-      setSavedCodeDrafts((current) => {
+      setSavedDrafts((current) => {
         const next = { ...current };
         delete next[item.id];
         return next;
@@ -180,9 +207,9 @@ export const FundHoldingImportPanel: React.FC = () => {
       await loadSavedHoldings();
     } catch (err) {
       const parsed = getParsedApiError(err);
-      setSaveError(parsed.message || '更新基金代码失败');
+      setSaveError(parsed.message || '更新基金持仓字段失败');
     } finally {
-      setCodeSaveLoadingId(null);
+      setFieldSaveLoadingId(null);
     }
   };
 
@@ -316,6 +343,32 @@ export const FundHoldingImportPanel: React.FC = () => {
                       })}
                       hint="名称不准也可以一并修正"
                     />
+                    <Input
+                      label="持有金额"
+                      placeholder="如 1234.56"
+                      value={item.holdingAmount || ''}
+                      onChange={(event) => updateImportedHolding(index, {
+                        holdingAmount: event.target.value,
+                      })}
+                      hint="没有份额时可用金额反推份额"
+                    />
+                    <Input
+                      label="持有份额"
+                      placeholder="可选"
+                      value={item.holdingShare || ''}
+                      onChange={(event) => updateImportedHolding(index, {
+                        holdingShare: event.target.value,
+                      })}
+                    />
+                    <Input
+                      label="持仓成本"
+                      placeholder="可选"
+                      value={item.costAmount || ''}
+                      onChange={(event) => updateImportedHolding(index, {
+                        costAmount: event.target.value,
+                      })}
+                      hint="没有成本时会尽量用收益反推"
+                    />
                   </div>
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
                     <CompactRow left="持有金额" right={holdingValue(item.holdingAmount)} />
@@ -395,28 +448,55 @@ export const FundHoldingImportPanel: React.FC = () => {
                     <CompactRow left="持仓成本" right={holdingValue(item.costAmount)} />
                     <CompactRow left="持有收益" right={holdingValue(item.holdingGain)} meta={holdingValue(item.holdingGainPct)} />
                   </div>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
                     <Input
                       label="基金代码"
                       inputMode="numeric"
                       placeholder="6 位代码"
-                      value={savedCodeDrafts[item.id] ?? item.fundCode ?? ''}
+                      value={getSavedDraftValue(item, 'fundCode')}
                       maxLength={6}
-                      onChange={(event) => setSavedCodeDrafts((current) => ({
-                        ...current,
-                        [item.id]: normalizeFundCodeInput(event.target.value),
-                      }))}
+                      onChange={(event) => updateSavedDraft(item.id, {
+                        fundCode: normalizeFundCodeInput(event.target.value),
+                      })}
                       hint={item.fundCode ? '可修改已保存代码' : '自动匹配失败时在这里补齐'}
                     />
+                    <Input
+                      label="持有金额"
+                      placeholder="如 1234.56"
+                      value={getSavedDraftValue(item, 'holdingAmount')}
+                      onChange={(event) => updateSavedDraft(item.id, {
+                        holdingAmount: event.target.value,
+                      })}
+                      hint="可用来自动反推份额"
+                    />
+                    <Input
+                      label="持有份额"
+                      placeholder="可选"
+                      value={getSavedDraftValue(item, 'holdingShare')}
+                      onChange={(event) => updateSavedDraft(item.id, {
+                        holdingShare: event.target.value,
+                      })}
+                    />
+                    <Input
+                      label="持仓成本"
+                      placeholder="可选"
+                      value={getSavedDraftValue(item, 'costAmount')}
+                      onChange={(event) => updateSavedDraft(item.id, {
+                        costAmount: event.target.value,
+                      })}
+                      hint="有收益字段时也会尝试反推"
+                    />
+                  </div>
+                  <div className="mt-3 flex justify-end">
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
-                      isLoading={codeSaveLoadingId === item.id}
+                      isLoading={fieldSaveLoadingId === item.id}
                       loadingText="保存中..."
-                      onClick={() => void saveSavedHoldingCode(item)}
+                      onClick={() => void saveSavedHoldingFields(item)}
                     >
-                      保存代码
+                      保存字段
                     </Button>
                   </div>
                   <div className="mt-2 text-xs text-muted-text">
@@ -512,6 +592,16 @@ export const FundHoldingImportPanel: React.FC = () => {
                     meta={item.latestNavDate || undefined}
                   />
                   <CompactRow left="最新日涨跌" right={holdingValue(item.latestDailyReturnPct)} />
+                  <CompactRow
+                    left="用于估算份额"
+                    right={holdingValue(item.inferredHoldingShare || item.holdingShare)}
+                    meta={item.inferredHoldingShare ? '自动反推' : undefined}
+                  />
+                  <CompactRow
+                    left="用于估算成本"
+                    right={holdingValue(item.inferredCostAmount || item.costAmount)}
+                    meta={item.inferredCostAmount ? '自动反推' : undefined}
+                  />
                   <CompactRow left="估算市值" right={holdingValue(item.estimatedMarketValue)} />
                   <CompactRow left="相对截图变化" right={holdingValue(item.valueChangeFromSaved)} />
                   <CompactRow left="估算盈亏" right={holdingValue(item.estimatedGain)} meta={holdingValue(item.estimatedGainPct)} />
@@ -523,6 +613,13 @@ export const FundHoldingImportPanel: React.FC = () => {
                   <div className="mt-2 space-y-1 text-xs leading-5 text-muted-text">
                     {item.reasons.slice(0, 3).map((reason) => (
                       <div key={reason}>依据：{reason}</div>
+                    ))}
+                  </div>
+                ) : null}
+                {item.valuationBasis?.length ? (
+                  <div className="mt-2 space-y-1 text-xs leading-5 text-cyan">
+                    {item.valuationBasis.slice(0, 3).map((basis) => (
+                      <div key={basis}>估算：{basis}</div>
                     ))}
                   </div>
                 ) : null}

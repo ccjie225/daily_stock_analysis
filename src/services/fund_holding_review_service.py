@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 _MONEY_QUANT = Decimal("0.01")
 _NAV_QUANT = Decimal("0.0001")
 _PCT_QUANT = Decimal("0.01")
+_SHARE_QUANT = Decimal("0.0001")
 
 
 class FundHoldingReviewService:
@@ -66,6 +67,9 @@ class FundHoldingReviewService:
             "value_change_from_saved": None,
             "estimated_gain": None,
             "estimated_gain_pct": None,
+            "inferred_holding_share": None,
+            "inferred_cost_amount": None,
+            "valuation_basis": [],
             "analysis_label": "信息不足",
             "risk_level": "unknown",
             "advice": "缺少基金代码或公开净值数据，先补齐识别结果后再做持仓判断。",
@@ -112,14 +116,45 @@ class FundHoldingReviewService:
         saved_amount = self._decimal_from_text(holding.get("holding_amount"))
         cost_amount = self._decimal_from_text(holding.get("cost_amount"))
         cost_nav = self._decimal_from_text(holding.get("cost_nav"))
+        holding_gain = self._decimal_from_text(holding.get("holding_gain"))
+        holding_gain_pct = self._decimal_from_text(holding.get("holding_gain_pct"))
+        inferred_share = None
+        inferred_cost_amount = None
+        valuation_basis: List[str] = []
+
+        if holding_share is None and latest_nav_dec is not None and latest_nav_dec > 0:
+            derived_market_value, share_basis = self._derive_market_value_for_share(
+                saved_amount=saved_amount,
+                cost_amount=cost_amount,
+                holding_gain=holding_gain,
+                holding_gain_pct=holding_gain_pct,
+            )
+            if derived_market_value is not None and derived_market_value >= 0:
+                holding_share = derived_market_value / latest_nav_dec
+                inferred_share = holding_share
+                valuation_basis.append(f"未识别持有份额，按 {share_basis} 反推份额")
+
         if cost_amount is None and cost_nav is not None and holding_share is not None:
             cost_amount = cost_nav * holding_share
+            inferred_cost_amount = cost_amount
+            valuation_basis.append("未识别持仓成本，按成本净值 × 份额反推成本")
 
         estimated_market_value = (
             holding_share * latest_nav_dec
             if holding_share is not None and latest_nav_dec is not None
             else None
         )
+        if cost_amount is None:
+            cost_amount, cost_basis = self._derive_cost_amount(
+                estimated_market_value=estimated_market_value,
+                saved_amount=saved_amount,
+                holding_gain=holding_gain,
+                holding_gain_pct=holding_gain_pct,
+            )
+            if cost_amount is not None:
+                inferred_cost_amount = cost_amount
+                valuation_basis.append(f"未识别持仓成本，按 {cost_basis} 反推成本")
+
         value_change = (
             estimated_market_value - saved_amount
             if estimated_market_value is not None and saved_amount is not None
@@ -145,6 +180,9 @@ class FundHoldingReviewService:
             "value_change_from_saved": self._format_signed_decimal(value_change, _MONEY_QUANT),
             "estimated_gain": self._format_signed_decimal(estimated_gain, _MONEY_QUANT),
             "estimated_gain_pct": self._format_pct(estimated_gain_pct),
+            "inferred_holding_share": self._format_decimal(inferred_share, _SHARE_QUANT),
+            "inferred_cost_amount": self._format_decimal(inferred_cost_amount, _MONEY_QUANT),
+            "valuation_basis": valuation_basis[:4],
             "analysis_label": analysis.get("label") or "信息不足",
             "risk_level": risk.get("risk_level") or "unknown",
             "data_status": "priced" if estimated_market_value is not None else "missing_position_fields",
@@ -157,6 +195,9 @@ class FundHoldingReviewService:
             gaps.append("缺少持仓成本，无法估算当前累计盈亏")
 
         result["reasons"] = self._build_reasons(analysis, returns, reference_valuation, result)
+        if valuation_basis:
+            result["reasons"].extend(valuation_basis)
+            result["reasons"] = result["reasons"][:6]
         if matched_by_name:
             result["reasons"].insert(
                 0,
@@ -177,6 +218,53 @@ class FundHoldingReviewService:
         except Exception as exc:
             logger.info("按基金名称匹配代码失败: %s", exc)
             return None
+
+    @staticmethod
+    def _derive_market_value_for_share(
+        *,
+        saved_amount: Optional[Decimal],
+        cost_amount: Optional[Decimal],
+        holding_gain: Optional[Decimal],
+        holding_gain_pct: Optional[Decimal],
+    ) -> tuple[Optional[Decimal], str]:
+        if saved_amount is not None:
+            return saved_amount, "持有金额 ÷ 最新公开净值"
+
+        if cost_amount is not None and holding_gain is not None:
+            return cost_amount + holding_gain, "持仓成本 + 持有收益，再 ÷ 最新公开净值"
+
+        if cost_amount is not None and holding_gain_pct is not None:
+            multiplier = Decimal("1") + holding_gain_pct / Decimal("100")
+            if multiplier > 0:
+                return cost_amount * multiplier, "持仓成本 × (1 + 收益率)，再 ÷ 最新公开净值"
+
+        if holding_gain is not None and holding_gain_pct not in (None, Decimal("0")):
+            cost = holding_gain / (holding_gain_pct / Decimal("100"))
+            if cost > 0:
+                return cost + holding_gain, "持有收益 ÷ 收益率反推市值，再 ÷ 最新公开净值"
+
+        return None, "可用持仓字段"
+
+    @staticmethod
+    def _derive_cost_amount(
+        *,
+        estimated_market_value: Optional[Decimal],
+        saved_amount: Optional[Decimal],
+        holding_gain: Optional[Decimal],
+        holding_gain_pct: Optional[Decimal],
+    ) -> tuple[Optional[Decimal], str]:
+        reference_market_value = estimated_market_value if estimated_market_value is not None else saved_amount
+        if reference_market_value is not None and holding_gain is not None:
+            cost_amount = reference_market_value - holding_gain
+            if cost_amount >= 0:
+                return cost_amount, "估算市值 - 持有收益"
+
+        if reference_market_value is not None and holding_gain_pct is not None:
+            denominator = Decimal("1") + holding_gain_pct / Decimal("100")
+            if denominator > 0:
+                return reference_market_value / denominator, "估算市值 ÷ (1 + 收益率)"
+
+        return None, "可用收益字段"
 
     @staticmethod
     def _build_reasons(
@@ -285,6 +373,9 @@ class FundHoldingReviewService:
                     "estimated_market_value": item.get("estimated_market_value"),
                     "estimated_gain": item.get("estimated_gain"),
                     "estimated_gain_pct": item.get("estimated_gain_pct"),
+                    "inferred_holding_share": item.get("inferred_holding_share"),
+                    "inferred_cost_amount": item.get("inferred_cost_amount"),
+                    "valuation_basis": item.get("valuation_basis", [])[:2],
                     "analysis_label": item.get("analysis_label"),
                     "risk_level": item.get("risk_level"),
                     "advice": item.get("advice"),
