@@ -15,6 +15,15 @@ class StubHoldingService:
 
 
 class StubFundService:
+    def resolve_fund_by_name(self, fund_name):
+        if fund_name == "测试沪深300联接C":
+            return {
+                "fund_code": "005918",
+                "fund_name": "测试沪深300联接C",
+                "match_type": "exact",
+            }
+        return None
+
     def analyze_fund(self, fund_code, days=365):
         return {
             "profile": {"fund_code": fund_code, "fund_name": "测试沪深300联接C"},
@@ -98,6 +107,33 @@ class FundHoldingReviewServiceTestCase(unittest.TestCase):
         self.assertEqual(item["data_status"], "missing_position_fields")
         self.assertIsNone(item["estimated_market_value"])
         self.assertTrue(any("缺少持有份额" in gap for gap in item["evidence_gaps"]))
+
+    def test_review_resolves_missing_code_by_fund_name(self):
+        service = FundHoldingReviewService(
+            holding_service=StubHoldingService([
+                {
+                    "id": 3,
+                    "fund_code": None,
+                    "fund_name": "测试沪深300联接C",
+                    "platform": "支付宝",
+                    "holding_amount": "1200.00",
+                    "holding_share": "1000",
+                    "cost_amount": "1000",
+                    "currency": "CNY",
+                    "confidence": "medium",
+                    "source": "screenshot",
+                    "warnings": [],
+                }
+            ]),
+            fund_service=StubFundService(),
+        )
+
+        item = service.review_holdings()["items"][0]
+
+        self.assertEqual(item["fund_code"], "005918")
+        self.assertEqual(item["data_status"], "priced")
+        self.assertEqual(item["estimated_market_value"], "1250.00")
+        self.assertTrue(any("自动匹配到 005918" in reason for reason in item["reasons"]))
 
 
 if __name__ == "__main__":

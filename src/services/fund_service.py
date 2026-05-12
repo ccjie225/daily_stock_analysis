@@ -9,6 +9,7 @@
 import logging
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -183,6 +184,46 @@ class FundService:
             logger.info("基金 %s 基础资料获取失败，继续使用净值数据: %s", code, exc)
 
         return profile
+
+    def resolve_fund_by_name(self, fund_name: str) -> Optional[Dict[str, Any]]:
+        """Resolve a fund code from a user/OCR-provided fund name.
+
+        Returns only a high-confidence unique match. Ambiguous fuzzy matches are
+        ignored so the holding review does not silently attach the wrong fund.
+        """
+        target = self._normalize_fund_name(fund_name)
+        if not target:
+            return None
+
+        candidates = []
+        for code, item in self._get_latest_open_fund_map().items():
+            name = str(item.get("fund_name") or item.get("基金简称") or item.get("基金名称") or "").strip()
+            normalized = self._normalize_fund_name(name)
+            if not normalized:
+                continue
+            score = self._fund_name_match_score(target, normalized)
+            if score <= 0:
+                continue
+            candidates.append((score, code, name, item))
+
+        if not candidates:
+            return None
+
+        best_score = max(score for score, *_ in candidates)
+        best = [entry for entry in candidates if entry[0] == best_score]
+        if len(best) != 1:
+            logger.info("基金名称 %s 匹配到多个候选，跳过自动代码匹配", fund_name)
+            return None
+
+        score, code, name, item = best[0]
+        return {
+            "fund_code": code,
+            "fund_name": name,
+            "fund_type": item.get("fund_type") or item.get("类型"),
+            "match_score": score,
+            "match_type": "exact" if score >= 100 else "fuzzy",
+            "source": "akshare.fund_open_fund_daily_em",
+        }
 
     def get_nav_history(self, fund_code: str, *, days: int = 365) -> List[_NavPoint]:
         code = self._normalize_fund_code(fund_code)
@@ -547,6 +588,26 @@ class FundService:
         if not _FUND_CODE_RE.fullmatch(code):
             raise ValueError("请输入 6 位场外基金代码，例如 005918")
         return code
+
+    @staticmethod
+    def _normalize_fund_name(value: Any) -> str:
+        text = unicodedata.normalize("NFKC", str(value or "")).upper()
+        text = re.sub(r"[\s·・,，.。:：()（）【】\[\]_-]+", "", text)
+        return text
+
+    @staticmethod
+    def _fund_name_match_score(target: str, candidate: str) -> int:
+        if not target or not candidate:
+            return 0
+        if target == candidate:
+            return 100
+        if target.startswith(candidate) or candidate.startswith(target):
+            return 90
+        if len(target) >= 6 and target in candidate:
+            return 82
+        if len(candidate) >= 6 and candidate in target:
+            return 80
+        return 0
 
     @staticmethod
     def _parse_nav_frame(df: Any) -> List[_NavPoint]:

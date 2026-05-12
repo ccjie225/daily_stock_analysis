@@ -76,9 +76,17 @@ class FundHoldingReviewService:
         }
 
         fund_code = holding.get("fund_code")
+        matched_by_name = None
         if not fund_code:
-            result["evidence_gaps"].append("缺少基金代码，无法拉取公开净值和基金画像")
-            return result
+            matched_by_name = self._resolve_missing_fund_code(holding)
+            if matched_by_name:
+                fund_code = matched_by_name["fund_code"]
+                result["fund_code"] = fund_code
+                result["fund_name"] = holding.get("fund_name") or matched_by_name.get("fund_name")
+                result["data_status"] = "matched_by_name"
+            else:
+                result["evidence_gaps"].append("缺少基金代码，且未能通过基金名称唯一匹配公开基金代码")
+                return result
 
         try:
             analysis = self.fund_service.analyze_fund(str(fund_code), days=365)
@@ -149,10 +157,26 @@ class FundHoldingReviewService:
             gaps.append("缺少持仓成本，无法估算当前累计盈亏")
 
         result["reasons"] = self._build_reasons(analysis, returns, reference_valuation, result)
+        if matched_by_name:
+            result["reasons"].insert(
+                0,
+                f"按基金名称自动匹配到 {matched_by_name['fund_code']}（{matched_by_name.get('fund_name') or '名称待确认'}），请核对 A/C 份额是否一致",
+            )
+            result["reasons"] = result["reasons"][:6]
         result["risks"] = list(analysis.get("risks") or [])[:4]
         result["evidence_gaps"] = gaps[:6]
         result["advice"] = self._build_rule_advice(result, risk, returns, reference_valuation)
         return result
+
+    def _resolve_missing_fund_code(self, holding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        fund_name = holding.get("fund_name")
+        if not fund_name or not hasattr(self.fund_service, "resolve_fund_by_name"):
+            return None
+        try:
+            return self.fund_service.resolve_fund_by_name(str(fund_name))
+        except Exception as exc:
+            logger.info("按基金名称匹配代码失败: %s", exc)
+            return None
 
     @staticmethod
     def _build_reasons(

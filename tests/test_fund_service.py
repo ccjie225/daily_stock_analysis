@@ -150,6 +150,38 @@ class TestFundService(unittest.TestCase):
         self.assertEqual(result["reference_valuation"]["pe_ttm"], 11.0)
         self.assertEqual(result["reference_valuation"]["pb"], 1.15)
 
+    def test_resolve_fund_by_name(self):
+        fake = self._fake_akshare()
+
+        def fund_open_fund_daily_em():
+            return pd.DataFrame([
+                {"基金代码": "110020", "基金简称": "易方达沪深300ETF联接A", "基金类型": "指数型"},
+                {"基金代码": "005918", "基金简称": "天弘沪深300ETF联接C", "基金类型": "指数型"},
+            ])
+
+        fake.fund_open_fund_daily_em = fund_open_fund_daily_em
+        with patch.dict(sys.modules, {"akshare": fake}):
+            match = FundService().resolve_fund_by_name("易方达沪深300ETF联接A")
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["fund_code"], "110020")
+        self.assertEqual(match["match_type"], "exact")
+
+    def test_resolve_fund_by_name_skips_ambiguous_share_classes(self):
+        fake = self._fake_akshare()
+
+        def fund_open_fund_daily_em():
+            return pd.DataFrame([
+                {"基金代码": "110020", "基金简称": "易方达沪深300ETF联接A", "基金类型": "指数型"},
+                {"基金代码": "007339", "基金简称": "易方达沪深300ETF联接C", "基金类型": "指数型"},
+            ])
+
+        fake.fund_open_fund_daily_em = fund_open_fund_daily_em
+        with patch.dict(sys.modules, {"akshare": fake}):
+            match = FundService().resolve_fund_by_name("易方达沪深300ETF联接")
+
+        self.assertIsNone(match)
+
     def test_invalid_fund_code_is_rejected(self):
         with self.assertRaises(ValueError):
             FundService().analyze_fund("abc")
