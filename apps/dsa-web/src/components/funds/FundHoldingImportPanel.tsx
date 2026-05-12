@@ -2,7 +2,7 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { fundsApi } from '../../api/funds';
 import { getParsedApiError } from '../../api/error';
-import { Badge, Button, Card, InlineAlert } from '../common';
+import { Badge, Button, Card, InlineAlert, Input } from '../common';
 import type {
   FundHoldingImportItem,
   FundHoldingImportResponse,
@@ -55,6 +55,8 @@ export const FundHoldingImportPanel: React.FC = () => {
   const [reviewError, setReviewError] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
   const [aiReviewLoading, setAiReviewLoading] = useState(false);
+  const [savedCodeDrafts, setSavedCodeDrafts] = useState<Record<number, string>>({});
+  const [codeSaveLoadingId, setCodeSaveLoadingId] = useState<number | null>(null);
   const holdingImageInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadSavedHoldings = async () => {
@@ -119,6 +121,23 @@ export const FundHoldingImportPanel: React.FC = () => {
     if (!holdingImportLoading) holdingImageInputRef.current?.click();
   };
 
+  const normalizeFundCodeInput = (value: string) => value.replace(/\D/g, '').slice(0, 6);
+
+  const updateImportedHolding = (
+    index: number,
+    patch: Partial<FundHoldingImportItem>,
+  ) => {
+    setHoldingImport((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        items: current.items.map((item, itemIndex) => (
+          itemIndex === index ? { ...item, ...patch } : item
+        )),
+      };
+    });
+  };
+
   const saveRecognizedHoldings = async () => {
     if (!importedHoldings.length || saveLoading) return;
 
@@ -135,6 +154,35 @@ export const FundHoldingImportPanel: React.FC = () => {
       setSaveError(parsed.message || '保存基金持仓失败');
     } finally {
       setSaveLoading(false);
+    }
+  };
+
+  const saveSavedHoldingCode = async (item: FundSavedHoldingItem) => {
+    if (codeSaveLoadingId) return;
+    const draftCode = normalizeFundCodeInput(savedCodeDrafts[item.id] ?? item.fundCode ?? '');
+    if (!/^\d{6}$/.test(draftCode)) {
+      setSaveError('基金代码需要填写 6 位数字，例如 110020');
+      return;
+    }
+
+    setSaveError('');
+    setSaveMessage('');
+    setCodeSaveLoadingId(item.id);
+    try {
+      await fundsApi.saveHoldings([{ ...item, fundCode: draftCode }]);
+      setSaveMessage(`已更新 ${item.fundName || draftCode} 的基金代码`);
+      setReview(null);
+      setSavedCodeDrafts((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
+      await loadSavedHoldings();
+    } catch (err) {
+      const parsed = getParsedApiError(err);
+      setSaveError(parsed.message || '更新基金代码失败');
+    } finally {
+      setCodeSaveLoadingId(null);
     }
   };
 
@@ -174,7 +222,7 @@ export const FundHoldingImportPanel: React.FC = () => {
           onChange={onHoldingImageSelected}
         />
         <p className="text-sm leading-6 text-secondary-text">
-          支持上传支付宝、天天基金、养基宝等场外基金持仓截图。识别后先人工核对，再保存到本地持仓库。
+          支持上传支付宝、天天基金、养基宝等场外基金持仓截图。识别后先人工核对，基金代码可手动补齐，再保存到本地持仓库。
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Button
@@ -247,6 +295,27 @@ export const FundHoldingImportPanel: React.FC = () => {
                       </div>
                     </div>
                     <Badge variant={confidence.variant}>{confidence.label}</Badge>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <Input
+                      label="基金代码"
+                      inputMode="numeric"
+                      placeholder="6 位代码，如 110020"
+                      value={item.fundCode || ''}
+                      maxLength={6}
+                      onChange={(event) => updateImportedHolding(index, {
+                        fundCode: normalizeFundCodeInput(event.target.value),
+                      })}
+                      hint="识别不到代码时可以在这里补齐"
+                    />
+                    <Input
+                      label="基金名称"
+                      value={item.fundName || ''}
+                      onChange={(event) => updateImportedHolding(index, {
+                        fundName: event.target.value,
+                      })}
+                      hint="名称不准也可以一并修正"
+                    />
                   </div>
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
                     <CompactRow left="持有金额" right={holdingValue(item.holdingAmount)} />
@@ -325,6 +394,30 @@ export const FundHoldingImportPanel: React.FC = () => {
                     <CompactRow left="持有份额" right={holdingValue(item.holdingShare)} />
                     <CompactRow left="持仓成本" right={holdingValue(item.costAmount)} />
                     <CompactRow left="持有收益" right={holdingValue(item.holdingGain)} meta={holdingValue(item.holdingGainPct)} />
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                    <Input
+                      label="基金代码"
+                      inputMode="numeric"
+                      placeholder="6 位代码"
+                      value={savedCodeDrafts[item.id] ?? item.fundCode ?? ''}
+                      maxLength={6}
+                      onChange={(event) => setSavedCodeDrafts((current) => ({
+                        ...current,
+                        [item.id]: normalizeFundCodeInput(event.target.value),
+                      }))}
+                      hint={item.fundCode ? '可修改已保存代码' : '自动匹配失败时在这里补齐'}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      isLoading={codeSaveLoadingId === item.id}
+                      loadingText="保存中..."
+                      onClick={() => void saveSavedHoldingCode(item)}
+                    >
+                      保存代码
+                    </Button>
                   </div>
                   <div className="mt-2 text-xs text-muted-text">
                     更新时间：{item.updatedAt || '--'}

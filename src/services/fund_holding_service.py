@@ -48,14 +48,23 @@ class FundHoldingService:
             saved: List[Dict[str, Any]] = []
             for item in normalized:
                 dedup_hash = self._dedup_hash(item)
-                row = session.execute(
+                candidate_hashes = self._candidate_dedup_hashes(item)
+                existing_rows = session.execute(
                     select(FundPersonalHolding)
-                    .where(FundPersonalHolding.dedup_hash == dedup_hash)
-                    .limit(1)
-                ).scalar_one_or_none()
+                    .where(FundPersonalHolding.dedup_hash.in_(candidate_hashes))
+                ).scalars().all()
+                rows_by_hash = {row.dedup_hash: row for row in existing_rows}
+                row = rows_by_hash.get(dedup_hash)
+                if row is None:
+                    row = next(
+                        (rows_by_hash[item_hash] for item_hash in candidate_hashes[1:] if item_hash in rows_by_hash),
+                        None,
+                    )
                 if row is None:
                     row = FundPersonalHolding(dedup_hash=dedup_hash, created_at=now)
                     session.add(row)
+                elif row.dedup_hash != dedup_hash and dedup_hash not in rows_by_hash:
+                    row.dedup_hash = dedup_hash
 
                 row.fund_code = item.get("fund_code")
                 row.fund_name = item.get("fund_name")
@@ -205,6 +214,16 @@ class FundHoldingService:
             ]
         )
         return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _candidate_dedup_hashes(cls, item: Dict[str, Any]) -> List[str]:
+        hashes = [cls._dedup_hash(item)]
+        if item.get("fund_code") and item.get("fund_name"):
+            legacy_name_item = {**item, "fund_code": None}
+            legacy_name_hash = cls._dedup_hash(legacy_name_item)
+            if legacy_name_hash not in hashes:
+                hashes.append(legacy_name_hash)
+        return hashes
 
     @staticmethod
     def _row_to_dict(row: FundPersonalHolding) -> Dict[str, Any]:

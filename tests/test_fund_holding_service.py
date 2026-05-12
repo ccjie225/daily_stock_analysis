@@ -107,6 +107,34 @@ class FundHoldingServiceTestCase(unittest.TestCase):
         self.assertEqual(saved[0]["fund_name"], "天弘沪深300指数C")
         self.assertEqual(saved[0]["holding_amount"], "210.00")
 
+    def test_save_code_backfills_existing_name_only_row(self) -> None:
+        first = self.service.save_imported_holdings([
+            {
+                "fund_name": "易方达沪深300ETF联接A",
+                "platform": "支付宝",
+                "holding_amount": "100.00",
+                "currency": "CNY",
+                "confidence": "medium",
+                "warnings": [],
+            }
+        ])
+        second = self.service.save_imported_holdings([
+            {
+                "fund_code": "110020",
+                "fund_name": "易方达沪深300ETF联接A",
+                "platform": "支付宝",
+                "holding_amount": "100.00",
+                "currency": "CNY",
+                "confidence": "medium",
+                "warnings": [],
+            }
+        ])
+
+        self.assertEqual(first["items"][0]["id"], second["items"][0]["id"])
+        saved = self.service.list_holdings()
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["fund_code"], "110020")
+
     def test_rejects_negative_non_negative_fields(self) -> None:
         with self.assertRaises(ValueError):
             self.service.save_imported_holdings([
