@@ -108,7 +108,7 @@ class FundHoldingReviewServiceTestCase(unittest.TestCase):
         self.assertIsNone(item["estimated_market_value"])
         self.assertTrue(any("缺少持有份额" in gap for gap in item["evidence_gaps"]))
 
-    def test_review_infers_share_from_holding_amount(self):
+    def test_review_infers_share_from_snapshot_amount_and_nav(self):
         service = FundHoldingReviewService(
             holding_service=StubHoldingService([
                 {
@@ -116,9 +116,10 @@ class FundHoldingReviewServiceTestCase(unittest.TestCase):
                     "fund_code": "005918",
                     "fund_name": "测试基金",
                     "platform": "支付宝",
-                    "holding_amount": "1250.00",
+                    "holding_amount": "1200.00",
                     "holding_share": None,
                     "cost_amount": None,
+                    "latest_nav": "1.2000",
                     "holding_gain": "250.00",
                     "currency": "CNY",
                     "confidence": "medium",
@@ -135,7 +136,9 @@ class FundHoldingReviewServiceTestCase(unittest.TestCase):
         self.assertEqual(item["inferred_holding_share"], "1000.0000")
         self.assertEqual(item["inferred_cost_amount"], "1000.00")
         self.assertEqual(item["estimated_market_value"], "1250.00")
+        self.assertEqual(item["value_change_from_saved"], "+50.00")
         self.assertEqual(item["estimated_gain"], "+250.00")
+        self.assertTrue(any("截图净值" in basis for basis in item["valuation_basis"]))
         self.assertFalse(any("缺少持有份额" in gap for gap in item["evidence_gaps"]))
 
     def test_review_resolves_missing_code_by_fund_name(self):

@@ -116,13 +116,16 @@ class FundHoldingReviewService:
         saved_amount = self._decimal_from_text(holding.get("holding_amount"))
         cost_amount = self._decimal_from_text(holding.get("cost_amount"))
         cost_nav = self._decimal_from_text(holding.get("cost_nav"))
+        snapshot_nav = self._decimal_from_text(holding.get("latest_nav"))
         holding_gain = self._decimal_from_text(holding.get("holding_gain"))
         holding_gain_pct = self._decimal_from_text(holding.get("holding_gain_pct"))
         inferred_share = None
         inferred_cost_amount = None
         valuation_basis: List[str] = []
 
-        if holding_share is None and latest_nav_dec is not None and latest_nav_dec > 0:
+        share_nav = snapshot_nav if snapshot_nav is not None and snapshot_nav > 0 else latest_nav_dec
+        share_nav_label = "截图净值" if snapshot_nav is not None and snapshot_nav > 0 else "最新公开净值"
+        if holding_share is None and share_nav is not None and share_nav > 0:
             derived_market_value, share_basis = self._derive_market_value_for_share(
                 saved_amount=saved_amount,
                 cost_amount=cost_amount,
@@ -130,9 +133,9 @@ class FundHoldingReviewService:
                 holding_gain_pct=holding_gain_pct,
             )
             if derived_market_value is not None and derived_market_value >= 0:
-                holding_share = derived_market_value / latest_nav_dec
+                holding_share = derived_market_value / share_nav
                 inferred_share = holding_share
-                valuation_basis.append(f"未识别持有份额，按 {share_basis} 反推份额")
+                valuation_basis.append(f"未识别持有份额，按 {share_basis} ÷ {share_nav_label} 反推份额")
 
         if cost_amount is None and cost_nav is not None and holding_share is not None:
             cost_amount = cost_nav * holding_share
@@ -228,20 +231,20 @@ class FundHoldingReviewService:
         holding_gain_pct: Optional[Decimal],
     ) -> tuple[Optional[Decimal], str]:
         if saved_amount is not None:
-            return saved_amount, "持有金额 ÷ 最新公开净值"
+            return saved_amount, "持有金额"
 
         if cost_amount is not None and holding_gain is not None:
-            return cost_amount + holding_gain, "持仓成本 + 持有收益，再 ÷ 最新公开净值"
+            return cost_amount + holding_gain, "持仓成本 + 持有收益"
 
         if cost_amount is not None and holding_gain_pct is not None:
             multiplier = Decimal("1") + holding_gain_pct / Decimal("100")
             if multiplier > 0:
-                return cost_amount * multiplier, "持仓成本 × (1 + 收益率)，再 ÷ 最新公开净值"
+                return cost_amount * multiplier, "持仓成本 × (1 + 收益率)"
 
         if holding_gain is not None and holding_gain_pct not in (None, Decimal("0")):
             cost = holding_gain / (holding_gain_pct / Decimal("100"))
             if cost > 0:
-                return cost + holding_gain, "持有收益 ÷ 收益率反推市值，再 ÷ 最新公开净值"
+                return cost + holding_gain, "持有收益 ÷ 收益率反推市值"
 
         return None, "可用持仓字段"
 

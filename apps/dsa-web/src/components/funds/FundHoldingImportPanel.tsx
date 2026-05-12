@@ -369,6 +369,15 @@ export const FundHoldingImportPanel: React.FC = () => {
                       })}
                       hint="没有成本时会尽量用收益反推"
                     />
+                    <Input
+                      label="截图净值"
+                      placeholder="可选"
+                      value={item.latestNav || ''}
+                      onChange={(event) => updateImportedHolding(index, {
+                        latestNav: event.target.value,
+                      })}
+                      hint="有截图净值时，份额反推更准确"
+                    />
                   </div>
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
                     <CompactRow left="持有金额" right={holdingValue(item.holdingAmount)} />
@@ -485,6 +494,15 @@ export const FundHoldingImportPanel: React.FC = () => {
                         costAmount: event.target.value,
                       })}
                       hint="有收益字段时也会尝试反推"
+                    />
+                    <Input
+                      label="截图净值"
+                      placeholder="可选"
+                      value={getSavedDraftValue(item, 'latestNav')}
+                      onChange={(event) => updateSavedDraft(item.id, {
+                        latestNav: event.target.value,
+                      })}
+                      hint="用于按截图金额反推真实份额"
                     />
                   </div>
                   <div className="mt-3 flex justify-end">
